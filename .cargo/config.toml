@@ -1,0 +1,7 @@
+# Fast linker for Windows — cuts link time from minutes to seconds.
+# rust-lld ships with the Rust toolchain; no extra install needed.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-Clink-arg=-fuse-ld=lld"]

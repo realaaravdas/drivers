@@ -9,5 +9,10 @@ bevy_camera = "0.18.1"
 bevy_rapier3d = "0.34.0"
 rand = "0.10.1"
 
+# Run with `cargo run --features fast-dev` for fastest iteration (Bevy as a DLL).
+# Plain `cargo run` still works; release builds are unaffected.
+[features]
+fast-dev = ["bevy/dynamic_linking"]
+
 [profile.dev.package."*"]
 opt-level = 3

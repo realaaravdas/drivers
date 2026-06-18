@@ -24,12 +24,16 @@ const BLOCK_SIZE: f32 = 40.0;
 const ROAD_WIDTH: f32 = 16.0;
 
 pub fn get_terrain_height(x: f32, z: f32) -> f32 {
-    let raw_h = (x / 400.0).sin() * 20.0 + (z / 300.0).cos() * 15.0 - 10.0;
-    if raw_h < 0.0 {
-        0.0
-    } else {
-        (raw_h * raw_h) / 20.0
-    }
+    // Large rolling hills — two overlapping low-frequency waves, like SF neighborhoods
+    let large = (x / 420.0).sin() * (z / 370.0 + 0.6).cos() * 28.0
+              + (x / 390.0 + 1.3).cos() * (z / 440.0).sin() * 22.0;
+    // Medium hills add local variety
+    let medium = ((x + z * 0.4) / 160.0).sin() * 10.0
+               + ((z - x * 0.3) / 140.0).cos() * 9.0;
+    // Subtle surface texture
+    let small = (x / 68.0).sin() * 2.5 + (z / 62.0).cos() * 2.0;
+    // +22 baseline keeps most terrain above zero; floor at 0 creates flat valley areas
+    (large + medium + small + 22.0).max(0.0)
 }
 
 fn generate_level(
@@ -123,18 +127,12 @@ fn generate_level(
                 }
             }
 
-            if min_dist < 1.0 { // Center line
-                colors.push([1.0, 0.9, 0.1, 1.0]); 
-            } else if min_dist < 15.0 { // Road
-                colors.push([0.3, 0.3, 0.3, 1.0]);
-            } else if min_dist < 18.0 { // Edge blend
-                let t = (min_dist - 15.0) / 3.0;
-                let r = 0.3 * (1.0 - t) + 0.2 * t;
-                let g = 0.3 * (1.0 - t) + 0.3 * t;
-                let b = 0.3 * (1.0 - t) + 0.2 * t;
-                colors.push([r, g, b, 1.0]);
-            } else { // Grass
-                colors.push([0.2, 0.3, 0.2, 1.0]);
+            if min_dist < 3.5 { // Center line — wide enough to be clearly visible at 8m grid
+                colors.push([1.0, 0.92, 0.1, 1.0]);
+            } else if min_dist < 16.0 { // Road — 16m aligns exactly with 2× grid spacing → sharp edge
+                colors.push([0.48, 0.48, 0.48, 1.0]);
+            } else { // Grass — high contrast with road, no blend zone
+                colors.push([0.12, 0.42, 0.08, 1.0]);
             }
         }
     }
@@ -176,10 +174,14 @@ fn generate_level(
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     terrain_mesh.insert_indices(Indices::U32(indices.clone()));
 
-    // Use the exact high-res geometry for physics so cars don't float or snag on mismatched edges
-    let vertices: Vec<Vec3> = positions.iter().map(|p| Vec3::from(*p)).collect();
-    let trimesh_indices: Vec<[u32; 3]> = indices.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
-    let collider = Collider::trimesh(vertices, trimesh_indices).unwrap();
+    // Heightfield collider: no internal-edge artifacts, no ghost collisions.
+    // Rapier's heightfield is purpose-built for terrain — objects glide smoothly over it.
+    let collider = Collider::heightfield(
+        heights.clone(),
+        num_rows,
+        num_cols,
+        Vec3::new(total_size, 1.0, total_size),
+    );
 
     commands.spawn((
         Mesh3d(meshes.add(terrain_mesh)),

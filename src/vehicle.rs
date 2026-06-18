@@ -8,7 +8,7 @@ pub struct VehiclePlugin;
 
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::Racing), spawn_player_car)
+        app.add_systems(OnEnter(GameState::Racing), (spawn_player_car, init_gate_materials))
            .add_systems(Update, (
                vehicle_update,
                spawn_exhaust_smoke,
@@ -16,6 +16,26 @@ impl Plugin for VehiclePlugin {
                update_gate_colors,
            ).run_if(in_state(GameState::Racing)));
     }
+}
+
+#[derive(Resource)]
+struct GateMaterials {
+    red: Handle<StandardMaterial>,
+    green: Handle<StandardMaterial>,
+    orange: Handle<StandardMaterial>,
+    yellow: Handle<StandardMaterial>,
+}
+
+fn init_gate_materials(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.insert_resource(GateMaterials {
+        red:    materials.add(Color::srgb(1.0, 0.0, 0.0)),
+        green:  materials.add(Color::srgb(0.0, 0.9, 0.1)),
+        orange: materials.add(Color::srgb(1.0, 0.45, 0.0)),
+        yellow: materials.add(Color::srgb(1.0, 1.0, 0.0)),
+    });
 }
 
 #[derive(Component)]
@@ -359,39 +379,37 @@ fn update_smoke_particles(
 
 fn update_gate_colors(
     player_query: Query<(&Transform, &crate::game_state::LapTracker), With<Player>>,
-    mut gate_query: Query<(&crate::game_state::WaypointMarker, &Children)>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    gate_query: Query<(&crate::game_state::WaypointMarker, &Children)>,
+    gate_mats: Res<GateMaterials>,
     mut mesh_materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
     level_data: Res<crate::level_gen::LevelData>,
 ) {
-    if let Some((player_transform, tracker)) = player_query.iter().next() {
-        let next_wp = tracker.next_waypoint;
-        
-        for (marker, children) in gate_query.iter_mut() {
-            let mut color = Color::srgb(1.0, 0.0, 0.0); // Red (default unpassed)
-            
-            if marker.0 == next_wp {
-                let dist = player_transform.translation.distance(level_data.waypoints[next_wp]);
-                if dist < 40.0 {
-                    color = Color::srgb(1.0, 1.0, 0.0); // Yellow (approaching)
-                } else {
-                    color = Color::srgb(1.0, 0.5, 0.0); // Orange (next up)
-                }
-            } else if (marker.0 < next_wp && tracker.current_lap == 1) || tracker.current_lap > 1 {
-                // If it's behind us, or we're on lap 2+, make past ones green.
-                // Actually, just making them green if they've been passed.
-                // A simple logic: if marker.0 != next_wp, and it's not the finish line, maybe green?
-                // Let's just make finish line white, next orange/yellow, others red.
-                if marker.0 == 0 {
-                    color = Color::srgb(1.0, 1.0, 1.0); // Finish line
-                }
-            }
+    let Some((player_transform, tracker)) = player_query.iter().next() else { return; };
+    if level_data.waypoints.is_empty() { return; }
 
-            let mat = materials.add(color);
-            for child in children.iter() {
-                if let Ok(mut m) = mesh_materials.get_mut(child) {
-                    *m = MeshMaterial3d(mat.clone());
-                }
+    let next_wp = tracker.next_waypoint;
+
+    for (marker, children) in gate_query.iter() {
+        let idx = marker.0;
+
+        // Colour rules for a circular circuit:
+        //   < next_wp  → green  (already passed this lap cycle)
+        //   == next_wp → yellow if approaching (<= 40 m), orange otherwise
+        //   > next_wp  → red    (not yet reached)
+        // When next_wp wraps back to 0/1 at lap start, all higher-index gates
+        // automatically revert to red without any special-case logic.
+        let mat_handle = if idx == next_wp {
+            let dist = player_transform.translation.distance(level_data.waypoints[idx]);
+            if dist <= 40.0 { &gate_mats.yellow } else { &gate_mats.orange }
+        } else if idx < next_wp {
+            &gate_mats.green
+        } else {
+            &gate_mats.red
+        };
+
+        for child in children.iter() {
+            if let Ok(mut m) = mesh_materials.get_mut(child) {
+                m.0 = mat_handle.clone();
             }
         }
     }
