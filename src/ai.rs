@@ -16,6 +16,8 @@ impl Plugin for AiPlugin {
 #[derive(Component)]
 pub struct AiDrivatar {
     pub current_waypoint: usize,
+    pub stuck_time: f32,
+    pub reversing_time: f32,
 }
 
 fn spawn_ai_cars(
@@ -48,7 +50,6 @@ fn spawn_ai_cars(
             Transform::from_translation(start_pos + offset),
             RigidBody::Dynamic,
             Collider::cuboid(1.0, 0.5, 2.0),
-            LockedAxes::ROTATION_LOCKED_X | LockedAxes::ROTATION_LOCKED_Z,
             Velocity::default(),
             ExternalForce::default(),
             ExternalImpulse::default(),
@@ -64,6 +65,8 @@ fn spawn_ai_cars(
             },
             AiDrivatar {
                 current_waypoint: 1, // Start aiming at the second waypoint
+                stuck_time: 0.0,
+                reversing_time: 0.0,
             },
             crate::game_state::LapTracker {
                 current_lap: 1,
@@ -120,12 +123,14 @@ fn spawn_ai_cars(
 }
 
 fn ai_update(
+    time: Res<Time>,
     difficulty: Res<GameDifficulty>,
     mut query: Query<(Entity, &mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar, Option<&Children>, &mut crate::game_state::LapTracker)>,
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), (Without<Vehicle>, Without<Player>)>,
     player_query: Query<&Transform, (With<Player>, Without<AiDrivatar>)>,
     level_data: Res<LevelData>,
 ) {
+    let dt = time.delta_secs();
     let player_transform = player_query.iter().next();
     
     for (_entity, mut vehicle, mut force, transform, velocity, mut ai, children, mut tracker) in query.iter_mut() {
@@ -172,16 +177,30 @@ fn ai_update(
 
         let to_target = (target_pos - transform.translation).normalize_or_zero();
 
-        // Calculate steering based on dot product of right vector and direction to target. 
-        // Need to negate it because positive steering rotates left (towards +Z from +X), 
-        // while positive dot product means target is to the right (+X).
-        let target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
+        let mut target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
         
         // Determine throttle (slow down if turning sharply)
         let forward_dot = forward.dot(to_target);
         let mut throttle = 1.0 * difficulty.ai_aggressiveness;
         if forward_dot < 0.5 {
             throttle = 0.7 * difficulty.ai_aggressiveness; // Brake slightly, but don't become snails
+        }
+
+        // Check if stuck
+        if velocity.linear.length() < 2.0 {
+            ai.stuck_time += dt;
+            if ai.stuck_time > 2.0 {
+                ai.reversing_time = 1.5;
+                ai.stuck_time = 0.0;
+            }
+        } else {
+            ai.stuck_time = 0.0;
+        }
+
+        if ai.reversing_time > 0.0 {
+            ai.reversing_time -= dt;
+            throttle = -1.0;
+            target_steering = -target_steering; // Turn opposite way to back out
         }
 
         // Smooth steering
@@ -213,6 +232,16 @@ fn ai_update(
         let turn_torque = Vec3::Y * steering * 1000.0 * speed_factor * turn_dir;
 
         force.force = engine_force + drag_force + grip_force;
-        force.torque = turn_torque;
+        
+        let up: Vec3 = transform.up().into();
+        let mut righting_torque = Vec3::ZERO;
+        
+        if transform.translation.y > 0.0 {
+            let tilt_axis = up.cross(Vec3::Y);
+            righting_torque += tilt_axis * 5000.0;
+            force.force += -Vec3::Y * 500.0;
+        }
+
+        force.torque = turn_torque + righting_torque;
     }
 }

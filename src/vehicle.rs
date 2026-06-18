@@ -13,6 +13,7 @@ impl Plugin for VehiclePlugin {
                vehicle_update,
                spawn_exhaust_smoke,
                update_smoke_particles,
+               update_gate_colors,
            ).run_if(in_state(GameState::Racing)));
     }
 }
@@ -61,7 +62,6 @@ fn spawn_player_car(
         Transform::from_translation(start_pos),
         RigidBody::Dynamic,
         Collider::cuboid(1.0, 0.5, 2.0),
-        LockedAxes::ROTATION_LOCKED_X | LockedAxes::ROTATION_LOCKED_Z,
         Velocity::default(),
         ExternalForce::default(),
         ExternalImpulse::default(),
@@ -134,8 +134,6 @@ fn vehicle_update(
     difficulty: Res<GameDifficulty>,
     mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity, Option<&Children>, Option<&mut crate::game_state::LapTracker>)>,
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
-    mut waypoint_materials: Query<(&crate::game_state::WaypointMarker, &mut MeshMaterial3d<StandardMaterial>)>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     level_data: Res<crate::level_gen::LevelData>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
@@ -226,32 +224,41 @@ fn vehicle_update(
             let turn_torque = Vec3::Y * steering * 1000.0 * speed_factor * turn_dir;
 
             force.force = engine_force + drag_force + grip_force;
-            force.torque = turn_torque;
+
+            // Self-righting and slope alignment
+            let up: Vec3 = transform.up().into();
+            let mut righting_torque = Vec3::ZERO;
+
+            if transform.translation.y > 0.0 {
+                // Ground alignment (fake suspension)
+                // We use cross product between current up and world Y
+                let tilt_axis = up.cross(Vec3::Y);
+                // The length of tilt_axis is proportional to the sine of the angle
+                // If it's heavily tilted (upside down), angle is large.
+                righting_torque += tilt_axis * 5000.0;
+                
+                // Add artificial gravity to keep it on the ground when driving on hills
+                force.force += -Vec3::Y * 500.0; 
+            }
+
+            force.torque = turn_torque + righting_torque;
 
             // Lap tracking logic
             if let Some(mut tracker) = lap_tracker {
                 if !level_data.waypoints.is_empty() {
                     let target_wp = level_data.waypoints[tracker.next_waypoint];
-                    if transform.translation.distance(target_wp) < 15.0 {
-                        // Change color of passed waypoint
-                        for (marker, mut mat) in &mut waypoint_materials {
-                            if marker.0 == tracker.next_waypoint {
-                                *mat = MeshMaterial3d(materials.add(Color::srgb(0.0, 1.0, 0.0)));
-                            }
-                        }
+                    let dist = transform.translation.distance(target_wp);
+                    
+                    if dist < 40.0 {
+                        // Change color to yellow when approaching
+                        // (Gate logic will be in a separate system or we query children here)
+                    }
 
+                    if dist < 15.0 {
                         tracker.next_waypoint += 1;
                         if tracker.next_waypoint >= level_data.waypoints.len() {
                             tracker.next_waypoint = 0;
                             tracker.current_lap += 1;
-                            // Reset waypoint colors for new lap, even if finished so we don't have weird state
-                            for (marker, mut mat) in &mut waypoint_materials {
-                                if marker.0 == 0 {
-                                    *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 1.0, 1.0)));
-                                } else {
-                                    *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 0.0, 0.0)));
-                                }
-                            }
                         }
                     }
                 }
@@ -313,6 +320,46 @@ fn update_smoke_particles(
             // Shrink as it fades
             let scale = particle.timer.fraction_remaining();
             transform.scale = Vec3::splat(scale);
+        }
+    }
+}
+
+fn update_gate_colors(
+    player_query: Query<(&Transform, &crate::game_state::LapTracker), With<Player>>,
+    mut gate_query: Query<(&crate::game_state::WaypointMarker, &Children)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut mesh_materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
+    level_data: Res<crate::level_gen::LevelData>,
+) {
+    if let Some((player_transform, tracker)) = player_query.iter().next() {
+        let next_wp = tracker.next_waypoint;
+        
+        for (marker, children) in gate_query.iter_mut() {
+            let mut color = Color::srgb(1.0, 0.0, 0.0); // Red (default unpassed)
+            
+            if marker.0 == next_wp {
+                let dist = player_transform.translation.distance(level_data.waypoints[next_wp]);
+                if dist < 40.0 {
+                    color = Color::srgb(1.0, 1.0, 0.0); // Yellow (approaching)
+                } else {
+                    color = Color::srgb(1.0, 0.5, 0.0); // Orange (next up)
+                }
+            } else if (marker.0 < next_wp && tracker.current_lap == 1) || tracker.current_lap > 1 {
+                // If it's behind us, or we're on lap 2+, make past ones green.
+                // Actually, just making them green if they've been passed.
+                // A simple logic: if marker.0 != next_wp, and it's not the finish line, maybe green?
+                // Let's just make finish line white, next orange/yellow, others red.
+                if marker.0 == 0 {
+                    color = Color::srgb(1.0, 1.0, 1.0); // Finish line
+                }
+            }
+
+            let mat = materials.add(color);
+            for child in children.iter() {
+                if let Ok(mut m) = mesh_materials.get_mut(child) {
+                    *m = MeshMaterial3d(mat.clone());
+                }
+            }
         }
     }
 }

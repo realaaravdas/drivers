@@ -13,6 +13,7 @@ impl Plugin for HudPlugin {
            .add_systems(Update, (
                update_place_and_hud,
                add_minimap_markers,
+               update_minimap,
            ).run_if(in_state(GameState::Racing)))
            .add_systems(OnExit(GameState::Racing), cleanup_hud)
            .add_systems(OnEnter(GameState::Scoreboard), setup_scoreboard)
@@ -40,7 +41,9 @@ struct ScoreboardEntity;
 enum ScoreboardBtn { MainMenu, Continue }
 
 #[derive(Component)]
-struct MinimapMarker;
+struct MinimapMarker {
+    target: Entity,
+}
 
 fn setup_hud(
     mut commands: Commands,
@@ -94,10 +97,9 @@ fn setup_hud(
             clear_color: ClearColorConfig::Custom(Color::srgb(0.05, 0.05, 0.05)),
             ..default()
         },
-        Projection::Orthographic(OrthographicProjection {
-            scale: 3.5, // Zoomed out enough to see the whole track
-            far: 1000.0,
-            ..OrthographicProjection::default_3d()
+        Projection::Perspective(PerspectiveProjection {
+            fov: std::f32::consts::PI / 4.0,
+            ..default()
         }),
         Transform::from_xyz(0.0, 500.0, 0.0).looking_at(Vec3::ZERO, -Vec3::Z),
         RenderLayers::from_layers(&[0, 1]), // See world AND minimap overlay
@@ -144,15 +146,13 @@ fn setup_hud(
 
 fn add_minimap_markers(
     mut commands: Commands,
-    query: Query<(Entity, &Vehicle, Option<&Children>)>,
+    query: Query<(Entity, &Vehicle)>,
     marker_query: Query<&MinimapMarker>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (entity, vehicle, children) in query.iter() {
-        let has_marker = children.map_or(false, |c| {
-            c.iter().any(|child| marker_query.get(child).is_ok())
-        });
+    for (entity, vehicle) in query.iter() {
+        let has_marker = marker_query.iter().any(|m| m.target == entity);
 
         if !has_marker {
             let color = if vehicle.is_player {
@@ -161,15 +161,53 @@ fn add_minimap_markers(
                 Color::srgb(0.2, 0.2, 1.0) // Blue for AI
             };
 
-            let marker = commands.spawn((
+            commands.spawn((
                 Mesh3d(meshes.add(Sphere::new(6.0))), // Large sphere to be visible on minimap
                 MeshMaterial3d(materials.add(color)),
-                Transform::from_translation(Vec3::Y * 450.0), // High above track
+                Transform::from_translation(Vec3::Y * 50.0), // Start with a default height
                 RenderLayers::layer(1), // Minimap layer only
-                MinimapMarker,
-            )).id();
+                MinimapMarker { target: entity },
+                HudEntity,
+            ));
+        }
+    }
+}
 
-            commands.entity(entity).add_children(&[marker]);
+fn update_minimap(
+    player_query: Query<&Transform, (With<Player>, Without<MinimapCamera>, Without<MinimapMarker>)>,
+    mut camera_query: Query<&mut Transform, With<MinimapCamera>>,
+    mut marker_query: Query<(&mut Transform, &MinimapMarker), (Without<Player>, Without<MinimapCamera>)>,
+    vehicle_query: Query<&Transform, (With<Vehicle>, Without<Player>, Without<MinimapCamera>, Without<MinimapMarker>)>,
+) {
+    // Update camera to follow player
+    if let Some(player_transform) = player_query.iter().next() {
+        if let Some(mut cam_transform) = camera_query.iter_mut().next() {
+            let fwd = player_transform.forward();
+            let up = Vec3::Y;
+            let target_pos = player_transform.translation;
+            let cam_pos = target_pos - fwd * 150.0 + up * 150.0;
+            
+            // Lerp camera for smooth tracking
+            cam_transform.translation = cam_transform.translation.lerp(cam_pos, 0.1);
+            
+            // Look slightly ahead of player
+            let look_target = target_pos + fwd * 50.0;
+            *cam_transform = cam_transform.looking_at(look_target, up);
+        }
+
+        // Update markers
+        for (mut marker_transform, marker) in marker_query.iter_mut() {
+            let mut target_pos = None;
+            if let Ok(p_transform) = player_query.get(marker.target) {
+                target_pos = Some(p_transform.translation);
+            } else if let Ok(v_transform) = vehicle_query.get(marker.target) {
+                target_pos = Some(v_transform.translation);
+            }
+
+            if let Some(pos) = target_pos {
+                // Keep marker floating above the target
+                marker_transform.translation = pos + Vec3::Y * 50.0;
+            }
         }
     }
 }
