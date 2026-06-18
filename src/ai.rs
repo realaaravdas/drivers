@@ -23,6 +23,7 @@ fn spawn_ai_cars(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     level_data: Res<LevelData>,
+    difficulty: Res<GameDifficulty>,
 ) {
     let start_pos = level_data.start_pos;
 
@@ -44,14 +45,19 @@ fn spawn_ai_cars(
             Damping { linear_damping: 0.5, angular_damping: 10.0 },
             Vehicle {
                 speed: 0.0,
-                max_speed: 120.0,
-                acceleration: 500.0,
+                max_speed: difficulty.top_speed,
+                acceleration: difficulty.acceleration,
                 steering_angle: 0.0,
                 max_steering: 1.047, // 60 degrees in radians
                 is_player: false,
             },
             AiDrivatar {
                 current_waypoint: 1, // Start aiming at the second waypoint
+            },
+            crate::game_state::LapTracker {
+                current_lap: 1,
+                total_laps: 3,
+                next_waypoint: 1,
             },
             RaceEntity,
         )).with_children(|parent| {
@@ -98,30 +104,43 @@ fn ai_update(
 ) {
     let player_transform = player_query.iter().next();
     
-    for (entity, mut vehicle, mut force, transform, velocity, mut ai, children) in query.iter_mut() {
+    for (_entity, mut vehicle, mut force, transform, velocity, mut ai, children) in query.iter_mut() {
         if level_data.waypoints.is_empty() { continue; }
         
         let target_wp = level_data.waypoints[ai.current_waypoint];
         
-        // If close enough to waypoint, go to next
+        // Lap and Waypoint logic
         if transform.translation.distance(target_wp) < 15.0 {
             ai.current_waypoint = (ai.current_waypoint + 1) % level_data.waypoints.len();
         }
 
         let target_wp = level_data.waypoints[ai.current_waypoint];
         let mut target_pos = target_wp;
+        let right: Vec3 = transform.right().into();
+        let forward: Vec3 = transform.forward().into();
 
-        // Aggressive AI: if player is nearby, aim for the player to cut them off
+        // Aggressive AI: Blocking behavior
         if let Some(p_transform) = player_transform {
-            if transform.translation.distance(p_transform.translation) < 30.0 * difficulty.ai_aggressiveness {
-                target_pos = p_transform.translation;
+            let to_player = p_transform.translation - transform.translation;
+            let dist = to_player.length();
+            
+            if dist < 40.0 * difficulty.ai_aggressiveness {
+                let is_behind = forward.dot(to_player) < 0.0;
+                
+                if is_behind {
+                    // Player is behind, try to block by swerving into their lane
+                    let lat_dist = right.dot(to_player);
+                    // Shift target position sideways in the direction of the player
+                    let block_shift = right * lat_dist.clamp(-15.0, 15.0) * 0.8 * difficulty.ai_aggressiveness;
+                    target_pos += block_shift;
+                } else if dist < 15.0 {
+                    // Player is next to us or slightly ahead, swerve slightly into them
+                    target_pos = target_pos.lerp(p_transform.translation, 0.3 * difficulty.ai_aggressiveness);
+                }
             }
         }
 
         let to_target = (target_pos - transform.translation).normalize_or_zero();
-        
-        let forward: Vec3 = transform.forward().into();
-        let right: Vec3 = transform.right().into();
 
         // Calculate steering based on dot product of right vector and direction to target. 
         // Need to negate it because positive steering rotates left (towards +Z from +X), 

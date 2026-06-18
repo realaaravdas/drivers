@@ -36,6 +36,7 @@ fn spawn_player_car(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     level_data: Res<LevelData>,
+    difficulty: Res<GameDifficulty>,
 ) {
     let start_pos = level_data.start_pos;
 
@@ -54,13 +55,18 @@ fn spawn_player_car(
         Damping { linear_damping: 0.5, angular_damping: 10.0 },
         Vehicle {
             speed: 0.0,
-            max_speed: 120.0,
-            acceleration: 500.0, // Increased for much better speed
+            max_speed: difficulty.top_speed,
+            acceleration: difficulty.acceleration,
             steering_angle: 0.0,
             max_steering: 1.047, // 60 degrees in radians
             is_player: true,
         },
         Player,
+        crate::game_state::LapTracker {
+            current_lap: 1,
+            total_laps: 3,
+            next_waypoint: 1, // 0 is start, so next is 1
+        },
         RaceEntity,
     )).with_children(|parent| {
         // Add Wheels
@@ -99,12 +105,16 @@ fn spawn_player_car(
 fn vehicle_update(
     time: Res<Time>,
     difficulty: Res<GameDifficulty>,
-    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity, Option<&Children>)>,
+    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity, Option<&Children>, Option<&mut crate::game_state::LapTracker>)>,
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
+    mut waypoint_materials: Query<(&crate::game_state::WaypointMarker, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut game_state: ResMut<NextState<GameState>>,
+    level_data: Res<crate::level_gen::LevelData>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
     let dt = time.delta_secs();
-    for (mut vehicle, mut force, transform, velocity, children) in query.iter_mut() {
+    for (mut vehicle, mut force, transform, velocity, children, lap_tracker) in query.iter_mut() {
         if vehicle.is_player {
             let mut throttle = 0.0;
             let mut target_steering = 0.0;
@@ -191,6 +201,41 @@ fn vehicle_update(
 
             force.force = engine_force + drag_force + grip_force;
             force.torque = turn_torque;
+
+            // Lap tracking logic
+            if let Some(mut tracker) = lap_tracker {
+                if !level_data.waypoints.is_empty() {
+                    let target_wp = level_data.waypoints[tracker.next_waypoint];
+                    if transform.translation.distance(target_wp) < 15.0 {
+                        // Change color of passed waypoint
+                        for (marker, mut mat) in &mut waypoint_materials {
+                            if marker.0 == tracker.next_waypoint {
+                                *mat = MeshMaterial3d(materials.add(Color::srgb(0.0, 1.0, 0.0)));
+                            }
+                        }
+
+                        tracker.next_waypoint += 1;
+                        if tracker.next_waypoint >= level_data.waypoints.len() {
+                            tracker.next_waypoint = 0;
+                            tracker.current_lap += 1;
+                            
+                            if tracker.current_lap > tracker.total_laps {
+                                // Race finished! Go back to menu for now
+                                game_state.set(GameState::MainMenu);
+                            } else {
+                                // Reset waypoint colors for new lap
+                                for (marker, mut mat) in &mut waypoint_materials {
+                                    if marker.0 == 0 {
+                                        *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 1.0, 1.0)));
+                                    } else {
+                                        *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 0.0, 0.0)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

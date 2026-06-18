@@ -10,6 +10,8 @@ impl Plugin for UiPlugin {
                menu_interaction,
                difficulty_interaction,
                sensitivity_interaction,
+               speed_interaction,
+               accel_interaction,
                update_settings_text
            ).run_if(in_state(GameState::MainMenu)))
            .add_systems(OnExit(GameState::MainMenu), cleanup_main_menu);
@@ -34,6 +36,18 @@ enum SensitivityBtn { Decrease, Increase }
 #[derive(Component)]
 struct SensitivityText;
 
+#[derive(Component)]
+enum SpeedBtn { Decrease, Increase }
+
+#[derive(Component)]
+struct SpeedText;
+
+#[derive(Component)]
+enum AccelBtn { Decrease, Increase }
+
+#[derive(Component)]
+struct AccelText;
+
 fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
     commands.spawn((
         Node {
@@ -44,19 +58,19 @@ fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
             flex_direction: FlexDirection::Column,
             ..default()
         },
-        BackgroundColor(Color::srgb(1.0, 0.9, 0.1)),
+        BackgroundColor(Color::srgb(0.05, 0.05, 0.08)), // Dark modern background
         MainMenuEntity,
     )).with_children(|parent| {
         // Title
         parent.spawn((
             Text::new("RUST RACER"),
             TextFont {
-                font_size: 80.0,
+                font_size: 90.0,
                 ..default()
             },
-            TextColor(Color::srgb(0.9, 0.1, 0.1)),
+            TextColor(Color::srgb(0.0, 0.8, 1.0)), // Cyan neon title
             Node {
-                margin: UiRect::all(Val::Px(50.0)),
+                margin: UiRect::all(Val::Px(40.0)),
                 ..default()
             },
         ));
@@ -67,50 +81,57 @@ fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 margin: UiRect::all(Val::Px(20.0)),
-                padding: UiRect::all(Val::Px(20.0)),
-                border: UiRect::all(Val::Px(4.0)),
+                padding: UiRect::all(Val::Px(30.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgb(1.0, 0.8, 0.0)), // Slightly darker yellow
+            BackgroundColor(Color::srgb(0.1, 0.1, 0.15)), // Dark panel
         )).with_children(|settings| {
+            
+            let row_node = Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                width: Val::Px(400.0),
+                margin: UiRect::all(Val::Px(10.0)),
+                ..default()
+            };
+            let label_node = Node { width: Val::Px(200.0), ..default() };
+            let val_node = Node { width: Val::Px(80.0), justify_content: JustifyContent::Center, ..default() };
+            let btn_node = Node { width: Val::Px(40.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() };
+            let btn_color = BackgroundColor(Color::srgb(0.2, 0.2, 0.3));
+            let text_font = TextFont { font_size: 24.0, ..default() };
+            let text_color = TextColor(Color::WHITE);
+
             // Difficulty row
-            settings.spawn((
-                Node {
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::Center,
-                    margin: UiRect::all(Val::Px(10.0)),
-                    ..default()
-                },
-            )).with_children(|row| {
-                row.spawn((Text::new("Difficulty: "), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK), Node { width: Val::Px(180.0), ..default() }));
-                
-                row.spawn((Button, Node { width: Val::Px(40.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::all(Val::Px(10.0)), ..default() }, BackgroundColor(Color::srgb(0.8, 0.8, 0.8)), DifficultyBtn::Decrease))
-                   .with_child((Text::new("-"), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK)));
-                
-                row.spawn((Text::new(format!("{:.1}", difficulty.ai_aggressiveness)), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK), Node { width: Val::Px(60.0), justify_content: JustifyContent::Center, ..default() }, DifficultyText));
-                
-                row.spawn((Button, Node { width: Val::Px(40.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::all(Val::Px(10.0)), ..default() }, BackgroundColor(Color::srgb(0.8, 0.8, 0.8)), DifficultyBtn::Increase))
-                   .with_child((Text::new("+"), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK)));
+            settings.spawn(row_node.clone()).with_children(|row| {
+                row.spawn((Text::new("AI Aggression"), text_font.clone(), text_color, label_node.clone()));
+                row.spawn((Button, btn_node.clone(), btn_color, DifficultyBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
+                row.spawn((Text::new(format!("{:.1}", difficulty.ai_aggressiveness)), text_font.clone(), text_color, val_node.clone(), DifficultyText));
+                row.spawn((Button, btn_node.clone(), btn_color, DifficultyBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
             });
 
             // Sensitivity row
-            settings.spawn((
-                Node {
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::Center,
-                    margin: UiRect::all(Val::Px(10.0)),
-                    ..default()
-                },
-            )).with_children(|row| {
-                row.spawn((Text::new("Steering Sens: "), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK), Node { width: Val::Px(180.0), ..default() }));
-                
-                row.spawn((Button, Node { width: Val::Px(40.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::all(Val::Px(10.0)), ..default() }, BackgroundColor(Color::srgb(0.8, 0.8, 0.8)), SensitivityBtn::Decrease))
-                   .with_child((Text::new("-"), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK)));
-                
-                row.spawn((Text::new(format!("{:.1}", difficulty.steering_sensitivity)), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK), Node { width: Val::Px(60.0), justify_content: JustifyContent::Center, ..default() }, SensitivityText));
-                
-                row.spawn((Button, Node { width: Val::Px(40.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::all(Val::Px(10.0)), ..default() }, BackgroundColor(Color::srgb(0.8, 0.8, 0.8)), SensitivityBtn::Increase))
-                   .with_child((Text::new("+"), TextFont { font_size: 30.0, ..default() }, TextColor(Color::BLACK)));
+            settings.spawn(row_node.clone()).with_children(|row| {
+                row.spawn((Text::new("Steering Sens"), text_font.clone(), text_color, label_node.clone()));
+                row.spawn((Button, btn_node.clone(), btn_color, SensitivityBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
+                row.spawn((Text::new(format!("{:.1}", difficulty.steering_sensitivity)), text_font.clone(), text_color, val_node.clone(), SensitivityText));
+                row.spawn((Button, btn_node.clone(), btn_color, SensitivityBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
+            });
+
+            // Top Speed row
+            settings.spawn(row_node.clone()).with_children(|row| {
+                row.spawn((Text::new("Top Speed"), text_font.clone(), text_color, label_node.clone()));
+                row.spawn((Button, btn_node.clone(), btn_color, SpeedBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
+                row.spawn((Text::new(format!("{:.0}", difficulty.top_speed)), text_font.clone(), text_color, val_node.clone(), SpeedText));
+                row.spawn((Button, btn_node.clone(), btn_color, SpeedBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
+            });
+
+            // Acceleration row
+            settings.spawn(row_node.clone()).with_children(|row| {
+                row.spawn((Text::new("Acceleration"), text_font.clone(), text_color, label_node.clone()));
+                row.spawn((Button, btn_node.clone(), btn_color, AccelBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
+                row.spawn((Text::new(format!("{:.0}", difficulty.acceleration)), text_font.clone(), text_color, val_node.clone(), AccelText));
+                row.spawn((Button, btn_node.clone(), btn_color, AccelBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
             });
         });
 
@@ -119,18 +140,18 @@ fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
             Button,
             Node {
                 width: Val::Px(300.0),
-                height: Val::Px(100.0),
+                height: Val::Px(80.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                margin: UiRect::all(Val::Px(30.0)),
+                margin: UiRect::all(Val::Px(40.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.1, 0.8, 1.0)),
+            BackgroundColor(Color::srgb(0.0, 0.8, 1.0)),
             StartButton,
         )).with_child((
             Text::new("START RACE"),
-            TextFont { font_size: 40.0, ..default() },
-            TextColor(Color::BLACK),
+            TextFont { font_size: 32.0, ..default() },
+            TextColor(Color::srgb(0.05, 0.05, 0.08)), // Dark text on bright button
         ));
     });
 }
@@ -144,8 +165,8 @@ fn menu_interaction(
     for (interaction, mut color) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => game_state.set(GameState::GeneratingLevel),
-            Interaction::Hovered => *color = Color::srgb(0.3, 0.9, 1.0).into(),
-            Interaction::None => *color = Color::srgb(0.1, 0.8, 1.0).into(),
+            Interaction::Hovered => *color = Color::srgb(0.5, 1.0, 1.0).into(),
+            Interaction::None => *color = Color::srgb(0.0, 0.8, 1.0).into(),
         }
     }
 }
@@ -178,10 +199,40 @@ fn sensitivity_interaction(
     }
 }
 
+fn speed_interaction(
+    interaction_query: Query<(&Interaction, &SpeedBtn), Changed<Interaction>>,
+    mut difficulty: ResMut<GameDifficulty>,
+) {
+    for (interaction, btn) in &interaction_query {
+        if *interaction == Interaction::Pressed {
+            match btn {
+                SpeedBtn::Decrease => difficulty.top_speed = (difficulty.top_speed - 10.0).max(40.0),
+                SpeedBtn::Increase => difficulty.top_speed = (difficulty.top_speed + 10.0).min(300.0),
+            }
+        }
+    }
+}
+
+fn accel_interaction(
+    interaction_query: Query<(&Interaction, &AccelBtn), Changed<Interaction>>,
+    mut difficulty: ResMut<GameDifficulty>,
+) {
+    for (interaction, btn) in &interaction_query {
+        if *interaction == Interaction::Pressed {
+            match btn {
+                AccelBtn::Decrease => difficulty.acceleration = (difficulty.acceleration - 50.0).max(50.0),
+                AccelBtn::Increase => difficulty.acceleration = (difficulty.acceleration + 50.0).min(2000.0),
+            }
+        }
+    }
+}
+
 fn update_settings_text(
     difficulty: Res<GameDifficulty>,
-    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<SensitivityText>)>,
-    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>)>,
+    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>)>,
+    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>, Without<SpeedText>, Without<AccelText>)>,
+    mut speed_text: Query<&mut Text, (With<SpeedText>, Without<DifficultyText>, Without<SensitivityText>, Without<AccelText>)>,
+    mut accel_text: Query<&mut Text, (With<AccelText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>)>,
 ) {
     if difficulty.is_changed() {
         for mut text in &mut diff_text {
@@ -189,6 +240,12 @@ fn update_settings_text(
         }
         for mut text in &mut sens_text {
             text.0 = format!("{:.1}", difficulty.steering_sensitivity);
+        }
+        for mut text in &mut speed_text {
+            text.0 = format!("{:.0}", difficulty.top_speed);
+        }
+        for mut text in &mut accel_text {
+            text.0 = format!("{:.0}", difficulty.acceleration);
         }
     }
 }

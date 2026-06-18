@@ -40,35 +40,47 @@ fn generate_level(
         RaceEntity,
     ));
 
-    // A simple loop for the track (square loop for now)
-    let min_x = -3;
-    let max_x = 3;
-    let min_z = -3;
-    let max_z = 3;
-
-    let mut waypoints = Vec::new();
+    let num_points = rng.random_range(12..20);
+    let mut waypoints: Vec<Vec3> = Vec::new();
     
-    // Bottom edge
-    for x in min_x..=max_x { waypoints.push(Vec3::new(x as f32 * BLOCK_SIZE, 0.0, min_z as f32 * BLOCK_SIZE)); }
-    // Right edge
-    for z in (min_z + 1)..=max_z { waypoints.push(Vec3::new(max_x as f32 * BLOCK_SIZE, 0.0, z as f32 * BLOCK_SIZE)); }
-    // Top edge
-    for x in (min_x..max_x).rev() { waypoints.push(Vec3::new(x as f32 * BLOCK_SIZE, 0.0, max_z as f32 * BLOCK_SIZE)); }
-    // Left edge
-    for z in (min_z + 1..max_z).rev() { waypoints.push(Vec3::new(min_x as f32 * BLOCK_SIZE, 0.0, z as f32 * BLOCK_SIZE)); }
+    // Generate a random noisy circular path
+    for i in 0..num_points {
+        let angle = (i as f32 / num_points as f32) * std::f32::consts::TAU;
+        let radius = rng.random_range(4.0..8.0); // Size of the track
+        
+        let x = (angle.cos() * radius).round() as i32;
+        let z = (angle.sin() * radius).round() as i32;
+        
+        let pos = Vec3::new(x as f32 * BLOCK_SIZE, 0.0, z as f32 * BLOCK_SIZE);
+        
+        if waypoints.is_empty() || waypoints.last().unwrap().distance(pos) > 1.0 {
+            waypoints.push(pos);
+        }
+    }
 
     level_data.waypoints = waypoints.clone();
     level_data.start_pos = waypoints[0] + Vec3::Y * 2.0;
+
+    fn distance_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+        let pa = p - a;
+        let ba = b - a;
+        let h = (pa.dot(ba) / ba.dot(ba)).clamp(0.0, 1.0);
+        (pa - ba * h).length()
+    }
 
     // Generate Buildings
     for x in -GRID_SIZE..=GRID_SIZE {
         for z in -GRID_SIZE..=GRID_SIZE {
             let pos = Vec3::new(x as f32 * BLOCK_SIZE, 0.0, z as f32 * BLOCK_SIZE);
             
-            // Check if pos is on the track
+            // Check if pos is on or near the track segments
             let mut is_track = false;
-            for wp in &waypoints {
-                if wp.distance(pos) < 1.0 {
+            let num_wp = waypoints.len();
+            for i in 0..num_wp {
+                let wp1 = waypoints[i];
+                let wp2 = waypoints[(i + 1) % num_wp];
+                
+                if distance_to_segment(pos, wp1, wp2) < BLOCK_SIZE * 0.8 {
                     is_track = true;
                     break;
                 }
@@ -86,16 +98,22 @@ fn generate_level(
                     Collider::cuboid((BLOCK_SIZE - ROAD_WIDTH) / 2.0, height / 2.0, (BLOCK_SIZE - ROAD_WIDTH) / 2.0),
                     RaceEntity,
                 ));
-            } else {
-                // Spawn a visual waypoint marker (optional, for debugging)
-                commands.spawn((
-                    Mesh3d(meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap())),
-                    MeshMaterial3d(materials.add(Color::srgb(1.0, 0.0, 0.0))),
-                    Transform::from_xyz(pos.x, 1.0, pos.z),
-                    RaceEntity,
-                ));
             }
         }
+    }
+
+    // Spawn Waypoint Spheres
+    for (i, wp) in waypoints.iter().enumerate() {
+        let color = if i == 0 { Color::srgb(1.0, 1.0, 1.0) } else { Color::srgb(1.0, 0.0, 0.0) };
+        let size = if i == 0 { 2.0 } else { 1.0 }; // Finish line is bigger
+        
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(size).mesh().ico(3).unwrap())),
+            MeshMaterial3d(materials.add(color)),
+            Transform::from_xyz(wp.x, size, wp.z),
+            crate::game_state::WaypointMarker(i),
+            RaceEntity,
+        ));
     }
 
     state.set(GameState::Racing);
