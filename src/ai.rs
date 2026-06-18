@@ -63,27 +63,27 @@ fn spawn_ai_cars(
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(-1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
                 WheelFrontLeft,
             ));
             // Front Right
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(-1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
                 WheelFrontRight,
             ));
             // Back Left
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(-1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
             ));
             // Back Right
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(-1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
             ));
         });
     }
