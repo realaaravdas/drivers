@@ -38,7 +38,7 @@ fn spawn_ai_cars(
         
         let x = spawn_pos.x;
         let z = spawn_pos.z;
-        let surface_y = (x / 200.0).sin() * 20.0 + (z / 150.0).cos() * 15.0 + (x * z / 10000.0).sin() * 10.0;
+        let surface_y = crate::level_gen::get_terrain_height(x, z);
         spawn_pos.y = surface_y + 5.0;
         
         // 4 better, 4 same, 4 worse
@@ -246,11 +246,24 @@ fn ai_update(
         let up: Vec3 = transform.up().into();
         let mut righting_torque = Vec3::ZERO;
         
-        let tilt_axis = up.cross(Vec3::Y);
-        righting_torque += tilt_axis * 5000.0;
+        let ground_y = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z);
+        let height_above_ground = transform.translation.y - ground_y;
         
-        let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
-        force.force += -up * downforce;
+        let h_right = crate::level_gen::get_terrain_height(transform.translation.x + 1.0, transform.translation.z);
+        let h_forward = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z + 1.0);
+        let normal = Vec3::new(ground_y - h_right, 1.0, ground_y - h_forward).normalize();
+
+        if height_above_ground < 3.0 {
+            let tilt_axis = up.cross(normal);
+            righting_torque += tilt_axis * 5000.0;
+            
+            let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
+            force.force += -normal * downforce;
+        } else {
+            force.force += -Vec3::Y * 400.0;
+            let tilt_axis = up.cross(Vec3::Y);
+            righting_torque += tilt_axis * 1000.0;
+        }
 
         force.torque = turn_torque + righting_torque;
     }

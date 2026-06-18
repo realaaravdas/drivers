@@ -23,6 +23,15 @@ const GRID_SIZE: i32 = 10;
 const BLOCK_SIZE: f32 = 40.0;
 const ROAD_WIDTH: f32 = 16.0;
 
+pub fn get_terrain_height(x: f32, z: f32) -> f32 {
+    let raw_h = (x / 400.0).sin() * 20.0 + (z / 300.0).cos() * 15.0 - 10.0;
+    if raw_h < 0.0 {
+        0.0
+    } else {
+        (raw_h * raw_h) / 20.0
+    }
+}
+
 fn generate_level(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -32,17 +41,11 @@ fn generate_level(
 ) {
     let mut rng = rand::rng();
 
-    let num_rows = 321;
-    let num_cols = 321;
-    let grid_size = 10.0;
+    let num_rows = 401; // Back down a bit to 401x401 to keep generation fast
+    let num_cols = 401;
+    let grid_size = 8.0; // 3200 total size. 8 unit grid is fine for road
     let total_size = (num_rows - 1) as f32 * grid_size;
     let half_size = total_size / 2.0;
-
-    let get_height = |x: f32, z: f32| -> f32 {
-        let raw_h = (x / 400.0).sin() + (z / 300.0).cos() + (x * z / 80000.0).sin() * 0.5;
-        // Smooth the hills, create large flat areas
-        (raw_h * raw_h * raw_h) * 20.0
-    };
 
     // 1. Generate waypoints FIRST
     let num_points = rng.random_range(24..40);
@@ -56,7 +59,7 @@ fn generate_level(
         let z = (angle.sin() * radius).round() * 40.0;
         
         let mut pos = Vec3::new(x, 0.0, z);
-        pos.y = get_height(pos.x, pos.z);
+        pos.y = get_terrain_height(pos.x, pos.z);
         
         if waypoints.is_empty() || waypoints.last().unwrap().distance(pos) > 1.0 {
             waypoints.push(pos);
@@ -84,7 +87,7 @@ fn generate_level(
         for x in 0..num_rows {
             let px = x as f32 * grid_size - half_size;
             let pz = z as f32 * grid_size - half_size;
-            let h = get_height(px, pz);
+            let h = get_terrain_height(px, pz);
             
             heights.push(h);
             positions.push([px, h, pz]);
@@ -178,7 +181,7 @@ fn generate_level(
             let pos_x = x as f32 * BLOCK_SIZE;
             let pos_z = z as f32 * BLOCK_SIZE;
             let mut pos = Vec3::new(pos_x, 0.0, pos_z);
-            pos.y = get_height(pos.x, pos.z);
+            pos.y = get_terrain_height(pos.x, pos.z);
             
             let mut is_track = false;
             let num_wp = waypoints.len();

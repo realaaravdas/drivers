@@ -240,16 +240,29 @@ fn vehicle_update(
             let up: Vec3 = transform.up().into();
             let mut righting_torque = Vec3::ZERO;
 
-            // Ground alignment (fake suspension)
-            // We use cross product between current up and world Y
-            let tilt_axis = up.cross(Vec3::Y);
-            // The length of tilt_axis is proportional to the sine of the angle
-            // If it's heavily tilted (upside down), angle is large.
-            righting_torque += tilt_axis * 5000.0;
+            let ground_y = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z);
+            let height_above_ground = transform.translation.y - ground_y;
             
-            // Aerodynamic downforce to keep it on the ground at high speeds, without vibrating at low speeds
-            let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
-            force.force += -up * downforce;
+            // Calculate ground normal using finite difference
+            let h_right = crate::level_gen::get_terrain_height(transform.translation.x + 1.0, transform.translation.z);
+            let h_forward = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z + 1.0);
+            let normal = Vec3::new(ground_y - h_right, 1.0, ground_y - h_forward).normalize();
+
+            // Ground alignment (suspension proxy)
+            if height_above_ground < 3.0 {
+                let tilt_axis = up.cross(normal);
+                righting_torque += tilt_axis * 5000.0;
+                
+                // Aerodynamic downforce to keep it planted at high speeds
+                let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
+                force.force += -normal * downforce;
+            } else {
+                // If we are high in the air, apply massive gravity to bring it back down
+                // and a bit of righting torque to make sure it lands on its wheels
+                force.force += -Vec3::Y * 400.0;
+                let tilt_axis = up.cross(Vec3::Y);
+                righting_torque += tilt_axis * 1000.0;
+            }
 
             force.torque = turn_torque + righting_torque;
 
