@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use crate::game_state::{GameState, RaceEntity, GameDifficulty};
 use crate::level_gen::LevelData;
-use crate::vehicle::Vehicle;
+use crate::vehicle::{Vehicle, Player, WheelFrontLeft, WheelFrontRight};
 
 pub struct AiPlugin;
 
@@ -44,26 +44,61 @@ fn spawn_ai_cars(
             Damping { linear_damping: 0.5, angular_damping: 2.0 },
             Vehicle {
                 speed: 0.0,
-                max_speed: 40.0, // Match player max speed
-                acceleration: 200.0, // Match player acceleration
+                max_speed: 60.0,
+                acceleration: 80.0,
                 steering_angle: 0.0,
-                max_steering: 1.0,
+                max_steering: 1.047, // 60 degrees in radians
                 is_player: false,
             },
             AiDrivatar {
                 current_waypoint: 1, // Start aiming at the second waypoint
             },
             RaceEntity,
-        ));
+        )).with_children(|parent| {
+            // Add Wheels
+            let wheel_mesh = meshes.add(Cylinder::new(0.4, 0.2));
+            let wheel_mat = materials.add(Color::srgb(0.1, 0.1, 0.1));
+
+            // Front Left
+            parent.spawn((
+                Mesh3d(wheel_mesh.clone()),
+                MeshMaterial3d(wheel_mat.clone()),
+                Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                WheelFrontLeft,
+            ));
+            // Front Right
+            parent.spawn((
+                Mesh3d(wheel_mesh.clone()),
+                MeshMaterial3d(wheel_mat.clone()),
+                Transform::from_xyz(-1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                WheelFrontRight,
+            ));
+            // Back Left
+            parent.spawn((
+                Mesh3d(wheel_mesh.clone()),
+                MeshMaterial3d(wheel_mat.clone()),
+                Transform::from_xyz(1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            ));
+            // Back Right
+            parent.spawn((
+                Mesh3d(wheel_mesh.clone()),
+                MeshMaterial3d(wheel_mat.clone()),
+                Transform::from_xyz(-1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            ));
+        });
     }
 }
 
 fn ai_update(
     difficulty: Res<GameDifficulty>,
-    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar)>,
+    mut query: Query<(Entity, &mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar, Option<&Children>)>,
+    mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
+    player_query: Query<&Transform, (With<Player>, Without<AiDrivatar>)>,
     level_data: Res<LevelData>,
 ) {
-    for (mut vehicle, mut force, transform, velocity, mut ai) in query.iter_mut() {
+    let player_transform = player_query.iter().next();
+    
+    for (entity, mut vehicle, mut force, transform, velocity, mut ai, children) in query.iter_mut() {
         if level_data.waypoints.is_empty() { continue; }
         
         let target_wp = level_data.waypoints[ai.current_waypoint];
@@ -74,7 +109,16 @@ fn ai_update(
         }
 
         let target_wp = level_data.waypoints[ai.current_waypoint];
-        let to_target = (target_wp - transform.translation).normalize_or_zero();
+        let mut target_pos = target_wp;
+
+        // Aggressive AI: if player is nearby, aim for the player to cut them off
+        if let Some(p_transform) = player_transform {
+            if transform.translation.distance(p_transform.translation) < 30.0 * difficulty.ai_aggressiveness {
+                target_pos = p_transform.translation;
+            }
+        }
+
+        let to_target = (target_pos - transform.translation).normalize_or_zero();
         
         let forward: Vec3 = transform.forward().into();
         let right: Vec3 = transform.right().into();
@@ -82,7 +126,7 @@ fn ai_update(
         // Calculate steering based on dot product of right vector and direction to target. 
         // Need to negate it because positive steering rotates left (towards +Z from +X), 
         // while positive dot product means target is to the right (+X).
-        let steering = -right.dot(to_target).clamp(-1.0, 1.0);
+        let target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
         
         // Determine throttle (slow down if turning sharply)
         let forward_dot = forward.dot(to_target);
@@ -91,14 +135,28 @@ fn ai_update(
             throttle = 0.7 * difficulty.ai_aggressiveness; // Brake slightly, but don't become snails
         }
 
-        vehicle.steering_angle = steering * vehicle.max_steering;
+        // Smooth steering
+        vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.1;
+        let steering = vehicle.steering_angle / vehicle.max_steering;
+
+        // Visual wheel steering
+        if let Some(children) = children {
+            for child in children.iter() {
+                let child_entity = child;
+                if let Ok((mut w_transform, fl, fr)) = wheel_query.get_mut(child_entity) {
+                    if fl.is_some() || fr.is_some() {
+                        w_transform.rotation = Quat::from_rotation_y(vehicle.steering_angle) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                    }
+                }
+            }
+        }
 
         let current_fwd_vel = velocity.linear.dot(forward);
         let current_lat_vel = velocity.linear.dot(right);
 
         let engine_force = forward * throttle * vehicle.acceleration;
         
-        let drag_force = -forward * current_fwd_vel * 2.0;
+        let drag_force = -forward * current_fwd_vel * 1.0; // Lower drag
         let grip_force = -right * current_lat_vel * 40.0; 
 
         let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);

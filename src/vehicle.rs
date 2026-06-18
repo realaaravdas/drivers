@@ -25,6 +25,12 @@ pub struct Vehicle {
 #[derive(Component)]
 pub struct Player;
 
+#[derive(Component)]
+pub struct WheelFrontLeft;
+
+#[derive(Component)]
+pub struct WheelFrontRight;
+
 fn spawn_player_car(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -48,34 +54,75 @@ fn spawn_player_car(
         Damping { linear_damping: 0.5, angular_damping: 2.0 },
         Vehicle {
             speed: 0.0,
-            max_speed: 40.0,
-            acceleration: 200.0, // Reduced from 3000
+            max_speed: 60.0,
+            acceleration: 80.0, // Lower acceleration for inertia feel
             steering_angle: 0.0,
-            max_steering: 1.0, 
+            max_steering: 1.047, // 60 degrees in radians
             is_player: true,
         },
         Player,
         RaceEntity,
-    ));
+    )).with_children(|parent| {
+        // Add Wheels
+        let wheel_mesh = meshes.add(Cylinder::new(0.4, 0.2));
+        let wheel_mat = materials.add(Color::srgb(0.1, 0.1, 0.1));
+
+        // Front Left
+        parent.spawn((
+            Mesh3d(wheel_mesh.clone()),
+            MeshMaterial3d(wheel_mat.clone()),
+            Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            WheelFrontLeft,
+        ));
+        // Front Right
+        parent.spawn((
+            Mesh3d(wheel_mesh.clone()),
+            MeshMaterial3d(wheel_mat.clone()),
+            Transform::from_xyz(-1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            WheelFrontRight,
+        ));
+        // Back Left
+        parent.spawn((
+            Mesh3d(wheel_mesh.clone()),
+            MeshMaterial3d(wheel_mat.clone()),
+            Transform::from_xyz(1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+        ));
+        // Back Right
+        parent.spawn((
+            Mesh3d(wheel_mesh.clone()),
+            MeshMaterial3d(wheel_mat.clone()),
+            Transform::from_xyz(-1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+        ));
+    });
 }
 
 fn vehicle_update(
     time: Res<Time>,
     difficulty: Res<GameDifficulty>,
-    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity)>,
+    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity, Option<&Children>)>,
+    mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
     let dt = time.delta_secs();
-    for (mut vehicle, mut force, transform, velocity) in query.iter_mut() {
+    for (mut vehicle, mut force, transform, velocity, children) in query.iter_mut() {
         if vehicle.is_player {
             let mut throttle = 0.0;
             let mut target_steering = 0.0;
+            let mut braking = false;
+            let mut drifting = false;
 
             if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
                 throttle += 1.0;
             }
             if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
                 throttle -= 1.0;
+            }
+            if keys.pressed(KeyCode::Space) {
+                braking = true;
+                throttle = 0.0;
+            }
+            if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+                drifting = true;
             }
             if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
                 target_steering += 1.0;
@@ -99,20 +146,42 @@ fn vehicle_update(
 
             let steering = vehicle.steering_angle / vehicle.max_steering;
 
+            // Visual wheel steering
+            if let Some(children) = children {
+                for child in children.iter() {
+                    let child_entity = child;
+                    if let Ok((mut w_transform, fl, fr)) = wheel_query.get_mut(child_entity) {
+                        if fl.is_some() || fr.is_some() {
+                            w_transform.rotation = Quat::from_rotation_y(vehicle.steering_angle) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                        }
+                    }
+                }
+            }
+
             let forward: Vec3 = transform.forward().into();
             let right: Vec3 = transform.right().into();
             
             let current_fwd_vel = velocity.linear.dot(forward);
             let current_lat_vel = velocity.linear.dot(right);
 
-            // Engine force
-            let engine_force = forward * throttle * vehicle.acceleration;
+            // Engine force (inertia build up through lower acceleration)
+            let mut engine_force = forward * throttle * vehicle.acceleration;
             
-            // Drag and rolling resistance
-            let drag_force = -forward * current_fwd_vel * 2.0;
+            // Braking
+            if braking {
+                let brake_force = -forward * current_fwd_vel * 5.0; // Strong stop
+                engine_force += brake_force;
+            }
 
-            // Lateral friction (grip) - simulate tires preventing sliding
-            let grip_force = -right * current_lat_vel * 40.0; 
+            // Drag
+            let drag_force = -forward * current_fwd_vel * 1.0; // Reduced drag for more coasting/inertia
+
+            // Lateral friction (grip) - drifting reduces this!
+            let mut grip_factor = 40.0;
+            if drifting {
+                grip_factor = 10.0; // Lose grip, slide!
+            }
+            let grip_force = -right * current_lat_vel * grip_factor; 
 
             // Turn torque - cars only turn effectively when moving
             let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
