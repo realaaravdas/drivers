@@ -318,7 +318,7 @@ fn setup_splash_screen(mut commands: Commands, asset_server: Res<AssetServer>) {
     )).with_children(|parent| {
         parent.spawn((
             ImageNode {
-                image: asset_server.load("splash.png"),
+                image: asset_server.load("splash.jpg"),
                 ..default()
             },
             Node {
@@ -366,7 +366,7 @@ fn setup_loading_screen(mut commands: Commands, asset_server: Res<AssetServer>) 
     )).with_children(|parent| {
         parent.spawn((
             ImageNode {
-                image: asset_server.load("loading.png"),
+                image: asset_server.load("loading.jpg"),
                 ..default()
             },
             Node {
