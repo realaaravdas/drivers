@@ -83,6 +83,19 @@ fn generate_level(
     let mut uvs = Vec::with_capacity(num_rows * num_cols);
     let mut colors = Vec::with_capacity(num_rows * num_cols);
 
+    let mut segments = Vec::new();
+    let num_wp = waypoints.len();
+    for i in 0..num_wp {
+        let wp1 = waypoints[i];
+        let wp2 = waypoints[(i + 1) % num_wp];
+        let l2 = wp1.distance_squared(wp2);
+        let min_x = wp1.x.min(wp2.x) - 16.0;
+        let max_x = wp1.x.max(wp2.x) + 16.0;
+        let min_z = wp1.z.min(wp2.z) - 16.0;
+        let max_z = wp1.z.max(wp2.z) + 16.0;
+        segments.push((wp1, wp2, l2, min_x, max_x, min_z, max_z));
+    }
+
     for z in 0..num_cols {
         for x in 0..num_rows {
             let px = x as f32 * grid_size - half_size;
@@ -91,19 +104,20 @@ fn generate_level(
             
             heights.push(h);
             positions.push([px, h, pz]);
-            normals.push([0.0, 1.0, 0.0]); 
+            normals.push([0.0, 1.0, 0.0]); // We'll compute real normals later
             uvs.push([x as f32 / num_rows as f32, z as f32 / num_cols as f32]);
-
-            // Road coloring
-            let p2d = Vec3::new(px, 0.0, pz);
-            let mut min_dist = std::f32::MAX;
-            for i in 0..waypoints.len() {
-                let wp1 = waypoints[i];
-                let wp2 = waypoints[(i + 1) % waypoints.len()];
-                let w1_2d = Vec3::new(wp1.x, 0.0, wp1.z);
-                let w2_2d = Vec3::new(wp2.x, 0.0, wp2.z);
-                
-                let dist = distance_to_segment(p2d, w1_2d, w2_2d);
+            
+            let pos = Vec3::new(px, 0.0, pz);
+            let mut min_dist = f32::MAX;
+            
+            for &(wp1, wp2, l2, min_x, max_x, min_z, max_z) in &segments {
+                if pos.x < min_x || pos.x > max_x || pos.z < min_z || pos.z > max_z {
+                    continue;
+                }
+                let t = ((pos.x - wp1.x) * (wp2.x - wp1.x) + (pos.z - wp1.z) * (wp2.z - wp1.z)) / l2;
+                let t = t.clamp(0.0, 1.0);
+                let proj = Vec3::new(wp1.x + t * (wp2.x - wp1.x), 0.0, wp1.z + t * (wp2.z - wp1.z));
+                let dist = pos.distance(proj);
                 if dist < min_dist {
                     min_dist = dist;
                 }
@@ -156,33 +170,16 @@ fn generate_level(
     }
 
     let mut terrain_mesh = Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
-    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    terrain_mesh.insert_indices(Indices::U32(indices));
+    terrain_mesh.insert_indices(Indices::U32(indices.clone()));
 
-    // Generate low-res physics collider to save FPS
-    let phys_rows = 101;
-    let phys_cols = 101;
-    let phys_grid_size = 32.0;
-    let mut phys_vertices = Vec::with_capacity(phys_rows * phys_cols);
-    for z in 0..phys_cols {
-        for x in 0..phys_rows {
-            let px = x as f32 * phys_grid_size - half_size;
-            let pz = z as f32 * phys_grid_size - half_size;
-            phys_vertices.push(Vec3::new(px, get_terrain_height(px, pz), pz));
-        }
-    }
-    let mut phys_indices = Vec::new();
-    for z in 0..phys_cols - 1 {
-        for x in 0..phys_rows - 1 {
-            let start = (z * phys_rows + x) as u32;
-            phys_indices.push([start, start + phys_rows as u32, start + 1]);
-            phys_indices.push([start + 1, start + phys_rows as u32, start + 1 + phys_rows as u32]);
-        }
-    }
-    let collider = Collider::trimesh(phys_vertices, phys_indices).unwrap();
+    // Use the exact high-res geometry for physics so cars don't float or snag on mismatched edges
+    let vertices: Vec<Vec3> = positions.iter().map(|p| Vec3::from(*p)).collect();
+    let trimesh_indices: Vec<[u32; 3]> = indices.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
+    let collider = Collider::trimesh(vertices, trimesh_indices).unwrap();
 
     commands.spawn((
         Mesh3d(meshes.add(terrain_mesh)),

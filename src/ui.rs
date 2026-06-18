@@ -353,25 +353,37 @@ struct LoadingEntity;
 struct LoadingTimer(Timer);
 
 fn setup_loading_screen(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.insert_resource(LoadingTimer(Timer::from_seconds(0.1, TimerMode::Once)));
+    // Increase to 0.5s to ensure Bevy has time to render the loading screen before blocking the thread
+    commands.insert_resource(LoadingTimer(Timer::from_seconds(0.5, TimerMode::Once)));
     commands.spawn((
         Node {
             width: Val::Percent(100.0),
             height: Val::Percent(100.0),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
+            flex_direction: FlexDirection::Column,
             ..default()
         },
+        BackgroundColor(Color::srgb(0.05, 0.05, 0.08)),
         LoadingEntity,
     )).with_children(|parent| {
+        parent.spawn((
+            Text::new("GENERATING RACETRACK..."),
+            TextFont {
+                font_size: 60.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.0, 0.8, 1.0)),
+        ));
         parent.spawn((
             ImageNode {
                 image: asset_server.load("loading.jpg"),
                 ..default()
             },
             Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
+                width: Val::Px(800.0),
+                height: Val::Px(450.0),
+                margin: UiRect::all(Val::Px(40.0)),
                 ..default()
             },
         ));
