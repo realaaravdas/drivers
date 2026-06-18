@@ -7,7 +7,7 @@ mod camera;
 
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
-use game_state::{GameState, GameDifficulty};
+use game_state::{GameState, GameDifficulty, RaceEntity};
 
 fn main() {
     App::new()
@@ -15,16 +15,15 @@ fn main() {
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         // .add_plugins(RapierDebugRenderPlugin::default()) // Uncomment to debug physics
         .init_state::<GameState>()
-        .insert_resource(GameDifficulty {
-            speed_multiplier: 1.0,
-            ai_aggressiveness: 1.0,
-        })
+        .insert_resource(GameDifficulty::default())
         .add_plugins(ui::UiPlugin)
         .add_plugins(level_gen::LevelGenPlugin)
         .add_plugins(vehicle::VehiclePlugin)
         .add_plugins(ai::AiPlugin)
         .add_plugins(camera::CameraPlugin)
         .add_systems(Startup, setup_environment)
+        .add_systems(Update, check_exit_to_menu.run_if(in_state(GameState::Racing)))
+        .add_systems(OnExit(GameState::Racing), cleanup_racing)
         .run();
 }
 
@@ -42,4 +41,22 @@ fn setup_environment(mut commands: Commands) {
     ));
 
     // Ambient light is now a component or different, just relying on directional light for now
+}
+
+fn check_exit_to_menu(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut game_state: ResMut<NextState<GameState>>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        game_state.set(GameState::MainMenu);
+    }
+}
+
+fn cleanup_racing(
+    mut commands: Commands,
+    query: Query<Entity, With<RaceEntity>>,
+) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
 }

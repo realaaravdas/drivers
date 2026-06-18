@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
-use crate::game_state::GameState;
+use crate::game_state::{GameState, RaceEntity, GameDifficulty};
 use crate::level_gen::LevelData;
 use crate::vehicle::Vehicle;
 
@@ -53,11 +53,13 @@ fn spawn_ai_cars(
             AiDrivatar {
                 current_waypoint: 1, // Start aiming at the second waypoint
             },
+            RaceEntity,
         ));
     }
 }
 
 fn ai_update(
+    difficulty: Res<GameDifficulty>,
     mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar)>,
     level_data: Res<LevelData>,
 ) {
@@ -84,9 +86,9 @@ fn ai_update(
         
         // Determine throttle (slow down if turning sharply)
         let forward_dot = forward.dot(to_target);
-        let mut throttle = 1.0;
+        let mut throttle = 1.0 * difficulty.ai_aggressiveness;
         if forward_dot < 0.5 {
-            throttle = 0.7; // Brake slightly, but don't become snails
+            throttle = 0.7 * difficulty.ai_aggressiveness; // Brake slightly, but don't become snails
         }
 
         vehicle.steering_angle = steering * vehicle.max_steering;

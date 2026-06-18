@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
-use crate::game_state::GameState;
+use crate::game_state::{GameState, RaceEntity, GameDifficulty};
 use crate::level_gen::LevelData;
 
 pub struct VehiclePlugin;
@@ -55,11 +55,13 @@ fn spawn_player_car(
             is_player: true,
         },
         Player,
+        RaceEntity,
     ));
 }
 
 fn vehicle_update(
     time: Res<Time>,
+    difficulty: Res<GameDifficulty>,
     mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity)>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
@@ -82,8 +84,8 @@ fn vehicle_update(
                 target_steering -= 1.0;
             }
 
-            let steering_speed = 3.0; // How fast the wheel turns
-            let return_speed = 5.0; // How fast it returns to center
+            let steering_speed = difficulty.steering_sensitivity; // How fast the wheel turns
+            let return_speed = difficulty.steering_sensitivity * 1.5; // How fast it returns to center
             
             let step = if target_steering == 0.0 { return_speed * dt } else { steering_speed * dt };
             let target_angle = target_steering * vehicle.max_steering;

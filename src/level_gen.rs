@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use rand::RngExt;
 use bevy_rapier3d::prelude::*;
-use crate::game_state::GameState;
+use crate::game_state::{GameState, RaceEntity};
 
 pub struct LevelGenPlugin;
 
@@ -37,6 +37,7 @@ fn generate_level(
         MeshMaterial3d(materials.add(Color::srgb(0.2, 0.2, 0.2))),
         Transform::from_xyz(0.0, -0.1, 0.0),
         Collider::cuboid(500.0, 0.1, 500.0),
+        RaceEntity,
     ));
 
     // A simple loop for the track (square loop for now)
@@ -83,6 +84,7 @@ fn generate_level(
                     MeshMaterial3d(materials.add(color)),
                     Transform::from_xyz(pos.x, height / 2.0, pos.z),
                     Collider::cuboid((BLOCK_SIZE - ROAD_WIDTH) / 2.0, height / 2.0, (BLOCK_SIZE - ROAD_WIDTH) / 2.0),
+                    RaceEntity,
                 ));
             } else {
                 // Spawn a visual waypoint marker (optional, for debugging)
@@ -90,6 +92,7 @@ fn generate_level(
                     Mesh3d(meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap())),
                     MeshMaterial3d(materials.add(Color::srgb(1.0, 0.0, 0.0))),
                     Transform::from_xyz(pos.x, 1.0, pos.z),
+                    RaceEntity,
                 ));
             }
         }
