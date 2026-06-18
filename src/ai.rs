@@ -41,7 +41,7 @@ fn spawn_ai_cars(
             ExternalForce::default(),
             ExternalImpulse::default(),
             ReadMassProperties::default(),
-            Damping { linear_damping: 0.5, angular_damping: 5.0 },
+            Damping { linear_damping: 0.5, angular_damping: 2.0 },
             Vehicle {
                 speed: 0.0,
                 max_speed: 35.0, // slightly slower than player
@@ -99,7 +99,7 @@ fn ai_update(
 
         let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
         let turn_dir = if current_fwd_vel < -0.1 { -1.0 } else { 1.0 };
-        let turn_torque = Vec3::Y * steering * 80.0 * speed_factor * turn_dir;
+        let turn_torque = Vec3::Y * steering * 300.0 * speed_factor * turn_dir;
 
         force.force = engine_force + drag_force + grip_force;
         force.torque = turn_torque;
