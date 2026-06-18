@@ -5,7 +5,10 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::MainMenu), setup_main_menu)
+        app.add_systems(OnEnter(GameState::Splash), setup_splash_screen)
+           .add_systems(Update, splash_timer.run_if(in_state(GameState::Splash)))
+           .add_systems(OnExit(GameState::Splash), cleanup_splash_screen)
+           .add_systems(OnEnter(GameState::MainMenu), setup_main_menu)
            .add_systems(Update, (
                menu_interaction,
                difficulty_interaction,
@@ -15,7 +18,10 @@ impl Plugin for UiPlugin {
                laps_interaction,
                update_settings_text
            ).run_if(in_state(GameState::MainMenu)))
-           .add_systems(OnExit(GameState::MainMenu), cleanup_main_menu);
+           .add_systems(OnExit(GameState::MainMenu), cleanup_main_menu)
+           .add_systems(OnEnter(GameState::Loading), setup_loading_screen)
+           .add_systems(Update, loading_timer.run_if(in_state(GameState::Loading)))
+           .add_systems(OnExit(GameState::Loading), cleanup_loading_screen);
     }
 }
 
@@ -175,11 +181,14 @@ fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
 
 fn menu_interaction(
     mut interaction_query: Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<StartButton>)>,
-    mut game_state: ResMut<NextState<GameState>>,
+    mut next_state: ResMut<NextState<GameState>>,
 ) {
     for (interaction, mut color) in &mut interaction_query {
         match *interaction {
-            Interaction::Pressed => game_state.set(GameState::GeneratingLevel),
+            Interaction::Pressed => {
+                *color = Color::srgb(0.0, 0.4, 0.0).into();
+                next_state.set(GameState::Loading);
+            }
             Interaction::Hovered => *color = Color::srgb(0.5, 1.0, 1.0).into(),
             Interaction::None => *color = Color::srgb(0.0, 0.8, 1.0).into(),
         }
@@ -284,6 +293,102 @@ fn update_settings_text(
 }
 
 fn cleanup_main_menu(mut commands: Commands, query: Query<Entity, With<MainMenuEntity>>) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+}
+
+#[derive(Component)]
+struct SplashEntity;
+
+#[derive(Resource)]
+struct SplashTimer(Timer);
+
+fn setup_splash_screen(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.insert_resource(SplashTimer(Timer::from_seconds(3.0, TimerMode::Once)));
+    commands.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        SplashEntity,
+    )).with_children(|parent| {
+        parent.spawn((
+            ImageNode {
+                image: asset_server.load("splash.png"),
+                ..default()
+            },
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+        ));
+    });
+}
+
+fn splash_timer(
+    time: Res<Time>,
+    mut timer: ResMut<SplashTimer>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    if timer.0.tick(time.delta()).just_finished() {
+        next_state.set(GameState::MainMenu);
+    }
+}
+
+fn cleanup_splash_screen(mut commands: Commands, query: Query<Entity, With<SplashEntity>>) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+}
+
+#[derive(Component)]
+struct LoadingEntity;
+
+#[derive(Resource)]
+struct LoadingTimer(Timer);
+
+fn setup_loading_screen(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.insert_resource(LoadingTimer(Timer::from_seconds(0.1, TimerMode::Once)));
+    commands.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        LoadingEntity,
+    )).with_children(|parent| {
+        parent.spawn((
+            ImageNode {
+                image: asset_server.load("loading.png"),
+                ..default()
+            },
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+        ));
+    });
+}
+
+fn loading_timer(
+    time: Res<Time>,
+    mut timer: ResMut<LoadingTimer>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    if timer.0.tick(time.delta()).just_finished() {
+        next_state.set(GameState::GeneratingLevel);
+    }
+}
+
+fn cleanup_loading_screen(mut commands: Commands, query: Query<Entity, With<LoadingEntity>>) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
     }

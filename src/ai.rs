@@ -254,15 +254,25 @@ fn ai_update(
         let normal = Vec3::new(ground_y - h_right, 1.0, ground_y - h_forward).normalize();
 
         if height_above_ground < 3.0 {
-            let tilt_axis = up.cross(normal);
-            righting_torque += tilt_axis * 5000.0;
+            let mut tilt_axis = up.cross(normal);
+            let dot = up.dot(normal);
+            if tilt_axis.length() < 0.001 && dot < 0.0 {
+                tilt_axis = transform.forward().into();
+            }
+            let angle = dot.clamp(-1.0, 1.0).acos();
+            righting_torque += tilt_axis.normalize_or_zero() * angle * 5000.0;
             
             let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
             force.force += -normal * downforce;
         } else {
             force.force += -Vec3::Y * 400.0;
-            let tilt_axis = up.cross(Vec3::Y);
-            righting_torque += tilt_axis * 1000.0;
+            let mut tilt_axis = up.cross(Vec3::Y);
+            let dot = up.dot(Vec3::Y);
+            if tilt_axis.length() < 0.001 && dot < 0.0 {
+                tilt_axis = transform.forward().into();
+            }
+            let angle = dot.clamp(-1.0, 1.0).acos();
+            righting_torque += tilt_axis.normalize_or_zero() * angle * 1000.0;
         }
 
         force.torque = turn_torque + righting_torque;

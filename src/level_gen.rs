@@ -155,16 +155,34 @@ fn generate_level(
         }
     }
 
-    let vertices: Vec<Vec3> = positions.iter().map(|p| Vec3::from(*p)).collect();
-    let trimesh_indices: Vec<[u32; 3]> = indices.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
-    let collider = Collider::trimesh(vertices, trimesh_indices).unwrap();
-
     let mut terrain_mesh = Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     terrain_mesh.insert_indices(Indices::U32(indices));
+
+    // Generate low-res physics collider to save FPS
+    let phys_rows = 101;
+    let phys_cols = 101;
+    let phys_grid_size = 32.0;
+    let mut phys_vertices = Vec::with_capacity(phys_rows * phys_cols);
+    for z in 0..phys_cols {
+        for x in 0..phys_rows {
+            let px = x as f32 * phys_grid_size - half_size;
+            let pz = z as f32 * phys_grid_size - half_size;
+            phys_vertices.push(Vec3::new(px, get_terrain_height(px, pz), pz));
+        }
+    }
+    let mut phys_indices = Vec::new();
+    for z in 0..phys_cols - 1 {
+        for x in 0..phys_rows - 1 {
+            let start = (z * phys_rows + x) as u32;
+            phys_indices.push([start, start + phys_rows as u32, start + 1]);
+            phys_indices.push([start + 1, start + phys_rows as u32, start + 1 + phys_rows as u32]);
+        }
+    }
+    let collider = Collider::trimesh(phys_vertices, phys_indices).unwrap();
 
     commands.spawn((
         Mesh3d(meshes.add(terrain_mesh)),
