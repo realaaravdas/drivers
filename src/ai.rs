@@ -44,8 +44,8 @@ fn spawn_ai_cars(
             Damping { linear_damping: 0.5, angular_damping: 2.0 },
             Vehicle {
                 speed: 0.0,
-                max_speed: 35.0, // slightly slower than player
-                acceleration: 180.0,
+                max_speed: 40.0, // Match player max speed
+                acceleration: 200.0, // Match player acceleration
                 steering_angle: 0.0,
                 max_steering: 1.0,
                 is_player: false,
@@ -77,14 +77,16 @@ fn ai_update(
         let forward: Vec3 = transform.forward().into();
         let right: Vec3 = transform.right().into();
 
-        // Calculate steering based on dot product of right vector and direction to target
-        let steering = right.dot(to_target).clamp(-1.0, 1.0);
+        // Calculate steering based on dot product of right vector and direction to target. 
+        // Need to negate it because positive steering rotates left (towards +Z from +X), 
+        // while positive dot product means target is to the right (+X).
+        let steering = -right.dot(to_target).clamp(-1.0, 1.0);
         
         // Determine throttle (slow down if turning sharply)
         let forward_dot = forward.dot(to_target);
         let mut throttle = 1.0;
         if forward_dot < 0.5 {
-            throttle = 0.3; // Brake or slow down
+            throttle = 0.7; // Brake slightly, but don't become snails
         }
 
         vehicle.steering_angle = steering * vehicle.max_steering;

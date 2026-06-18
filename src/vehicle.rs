@@ -59,13 +59,15 @@ fn spawn_player_car(
 }
 
 fn vehicle_update(
+    time: Res<Time>,
     mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity)>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
+    let dt = time.delta_secs();
     for (mut vehicle, mut force, transform, velocity) in query.iter_mut() {
         if vehicle.is_player {
             let mut throttle = 0.0;
-            let mut steering = 0.0;
+            let mut target_steering = 0.0;
 
             if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
                 throttle += 1.0;
@@ -74,13 +76,26 @@ fn vehicle_update(
                 throttle -= 1.0;
             }
             if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-                steering += 1.0;
+                target_steering += 1.0;
             }
             if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-                steering -= 1.0;
+                target_steering -= 1.0;
             }
 
-            vehicle.steering_angle = steering * vehicle.max_steering;
+            let steering_speed = 3.0; // How fast the wheel turns
+            let return_speed = 5.0; // How fast it returns to center
+            
+            let step = if target_steering == 0.0 { return_speed * dt } else { steering_speed * dt };
+            let target_angle = target_steering * vehicle.max_steering;
+            let diff = target_angle - vehicle.steering_angle;
+            
+            if diff.abs() <= step {
+                vehicle.steering_angle = target_angle;
+            } else {
+                vehicle.steering_angle += diff.signum() * step;
+            }
+
+            let steering = vehicle.steering_angle / vehicle.max_steering;
 
             let forward: Vec3 = transform.forward().into();
             let right: Vec3 = transform.right().into();
