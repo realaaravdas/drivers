@@ -61,7 +61,7 @@ fn spawn_ai_cars(
             ExternalImpulse::default(),
             ReadMassProperties::default(),
             Ccd::enabled(),
-            Damping { linear_damping: 0.5, angular_damping: 10.0 },
+            Damping { linear_damping: 0.5, angular_damping: 20.0 },
             Vehicle {
                 speed: 0.0,
                 max_speed: difficulty.top_speed * spec_mod,
@@ -260,7 +260,7 @@ fn ai_update(
                 tilt_axis = transform.forward().into();
             }
             let angle = dot.clamp(-1.0, 1.0).acos();
-            righting_torque += tilt_axis.normalize_or_zero() * angle * 5000.0;
+            righting_torque += tilt_axis.normalize_or_zero() * angle * 400.0;
             
             let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
             force.force += -normal * downforce;
@@ -272,7 +272,7 @@ fn ai_update(
                 tilt_axis = transform.forward().into();
             }
             let angle = dot.clamp(-1.0, 1.0).acos();
-            righting_torque += tilt_axis.normalize_or_zero() * angle * 1000.0;
+            righting_torque += tilt_axis.normalize_or_zero() * angle * 200.0;
         }
 
         force.torque = turn_torque + righting_torque;
