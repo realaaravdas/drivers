@@ -78,8 +78,13 @@ fn spawn_player_car(
         Player,
         crate::game_state::LapTracker {
             current_lap: 1,
-            total_laps: 3,
+            total_laps: difficulty.laps,
             next_waypoint: 1, // 0 is start, so next is 1
+            race_start_time: 0.0,
+            current_lap_start_time: 0.0,
+            lap_times: Vec::new(),
+            finished_time: None,
+            place: 1,
         },
         RaceEntity,
     )).with_children(|parent| {
@@ -131,7 +136,6 @@ fn vehicle_update(
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
     mut waypoint_materials: Query<(&crate::game_state::WaypointMarker, &mut MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut game_state: ResMut<NextState<GameState>>,
     level_data: Res<crate::level_gen::LevelData>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
@@ -240,18 +244,12 @@ fn vehicle_update(
                         if tracker.next_waypoint >= level_data.waypoints.len() {
                             tracker.next_waypoint = 0;
                             tracker.current_lap += 1;
-                            
-                            if tracker.current_lap > tracker.total_laps {
-                                // Race finished! Go back to menu for now
-                                game_state.set(GameState::MainMenu);
-                            } else {
-                                // Reset waypoint colors for new lap
-                                for (marker, mut mat) in &mut waypoint_materials {
-                                    if marker.0 == 0 {
-                                        *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 1.0, 1.0)));
-                                    } else {
-                                        *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 0.0, 0.0)));
-                                    }
+                            // Reset waypoint colors for new lap, even if finished so we don't have weird state
+                            for (marker, mut mat) in &mut waypoint_materials {
+                                if marker.0 == 0 {
+                                    *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 1.0, 1.0)));
+                                } else {
+                                    *mat = MeshMaterial3d(materials.add(Color::srgb(1.0, 0.0, 0.0)));
                                 }
                             }
                         }

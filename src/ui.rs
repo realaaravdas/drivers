@@ -12,6 +12,7 @@ impl Plugin for UiPlugin {
                sensitivity_interaction,
                speed_interaction,
                accel_interaction,
+               laps_interaction,
                update_settings_text
            ).run_if(in_state(GameState::MainMenu)))
            .add_systems(OnExit(GameState::MainMenu), cleanup_main_menu);
@@ -47,6 +48,12 @@ enum AccelBtn { Decrease, Increase }
 
 #[derive(Component)]
 struct AccelText;
+
+#[derive(Component)]
+enum LapsBtn { Decrease, Increase }
+
+#[derive(Component)]
+struct LapsText;
 
 fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
     commands.spawn((
@@ -132,6 +139,14 @@ fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
                 row.spawn((Button, btn_node.clone(), btn_color, AccelBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
                 row.spawn((Text::new(format!("{:.0}", difficulty.acceleration)), text_font.clone(), text_color, val_node.clone(), AccelText));
                 row.spawn((Button, btn_node.clone(), btn_color, AccelBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
+            });
+
+            // Laps row
+            settings.spawn(row_node.clone()).with_children(|row| {
+                row.spawn((Text::new("Laps"), text_font.clone(), text_color, label_node.clone()));
+                row.spawn((Button, btn_node.clone(), btn_color, LapsBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
+                row.spawn((Text::new(format!("{}", difficulty.laps)), text_font.clone(), text_color, val_node.clone(), LapsText));
+                row.spawn((Button, btn_node.clone(), btn_color, LapsBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
             });
         });
 
@@ -227,12 +242,27 @@ fn accel_interaction(
     }
 }
 
+fn laps_interaction(
+    interaction_query: Query<(&Interaction, &LapsBtn), Changed<Interaction>>,
+    mut difficulty: ResMut<GameDifficulty>,
+) {
+    for (interaction, btn) in &interaction_query {
+        if *interaction == Interaction::Pressed {
+            match btn {
+                LapsBtn::Decrease => difficulty.laps = (difficulty.laps.saturating_sub(1)).max(1),
+                LapsBtn::Increase => difficulty.laps = (difficulty.laps + 1).min(10),
+            }
+        }
+    }
+}
+
 fn update_settings_text(
     difficulty: Res<GameDifficulty>,
-    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>)>,
-    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>, Without<SpeedText>, Without<AccelText>)>,
-    mut speed_text: Query<&mut Text, (With<SpeedText>, Without<DifficultyText>, Without<SensitivityText>, Without<AccelText>)>,
-    mut accel_text: Query<&mut Text, (With<AccelText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>)>,
+    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>)>,
+    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>)>,
+    mut speed_text: Query<&mut Text, (With<SpeedText>, Without<DifficultyText>, Without<SensitivityText>, Without<AccelText>, Without<LapsText>)>,
+    mut accel_text: Query<&mut Text, (With<AccelText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<LapsText>)>,
+    mut laps_text: Query<&mut Text, (With<LapsText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>)>,
 ) {
     if difficulty.is_changed() {
         for mut text in &mut diff_text {
@@ -246,6 +276,9 @@ fn update_settings_text(
         }
         for mut text in &mut accel_text {
             text.0 = format!("{:.0}", difficulty.acceleration);
+        }
+        for mut text in &mut laps_text {
+            text.0 = format!("{}", difficulty.laps);
         }
     }
 }

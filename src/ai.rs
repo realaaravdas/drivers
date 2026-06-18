@@ -67,8 +67,13 @@ fn spawn_ai_cars(
             },
             crate::game_state::LapTracker {
                 current_lap: 1,
-                total_laps: 3,
+                total_laps: difficulty.laps,
                 next_waypoint: 1,
+                race_start_time: 0.0,
+                current_lap_start_time: 0.0,
+                lap_times: Vec::new(),
+                finished_time: None,
+                place: 1,
             },
             RaceEntity,
         )).with_children(|parent| {

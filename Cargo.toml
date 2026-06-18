@@ -5,5 +5,6 @@ edition = "2024"
 
 [dependencies]
 bevy = { version = "0.18.1" }
+bevy_camera = "0.18.1"
 bevy_rapier3d = "0.34.0"
 rand = "0.10.1"
