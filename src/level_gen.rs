@@ -90,6 +90,10 @@ fn generate_level(
         }
     }
 
+    let vertices: Vec<Vec3> = positions.iter().map(|p| Vec3::from(*p)).collect();
+    let trimesh_indices: Vec<[u32; 3]> = indices.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
+    let collider = Collider::trimesh(vertices, trimesh_indices).unwrap();
+
     let mut terrain_mesh = Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
@@ -100,7 +104,7 @@ fn generate_level(
         Mesh3d(meshes.add(terrain_mesh)),
         MeshMaterial3d(materials.add(Color::srgb(0.2, 0.3, 0.2))),
         Transform::IDENTITY,
-        Collider::heightfield(heights, num_rows, num_cols, Vec3::new(total_size, 1.0, total_size)),
+        collider,
         RaceEntity,
     ));
 

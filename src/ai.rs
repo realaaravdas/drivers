@@ -243,11 +243,9 @@ fn ai_update(
         let up: Vec3 = transform.up().into();
         let mut righting_torque = Vec3::ZERO;
         
-        if transform.translation.y > 0.0 {
-            let tilt_axis = up.cross(Vec3::Y);
-            righting_torque += tilt_axis * 5000.0;
-            force.force += -Vec3::Y * 500.0;
-        }
+        let tilt_axis = up.cross(Vec3::Y);
+        righting_torque += tilt_axis * 5000.0;
+        force.force += -Vec3::Y * 500.0;
 
         force.torque = turn_torque + righting_torque;
     }

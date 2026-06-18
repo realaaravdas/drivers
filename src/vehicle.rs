@@ -230,17 +230,15 @@ fn vehicle_update(
             let up: Vec3 = transform.up().into();
             let mut righting_torque = Vec3::ZERO;
 
-            if transform.translation.y > 0.0 {
-                // Ground alignment (fake suspension)
-                // We use cross product between current up and world Y
-                let tilt_axis = up.cross(Vec3::Y);
-                // The length of tilt_axis is proportional to the sine of the angle
-                // If it's heavily tilted (upside down), angle is large.
-                righting_torque += tilt_axis * 5000.0;
-                
-                // Add artificial gravity to keep it on the ground when driving on hills
-                force.force += -Vec3::Y * 500.0; 
-            }
+            // Ground alignment (fake suspension)
+            // We use cross product between current up and world Y
+            let tilt_axis = up.cross(Vec3::Y);
+            // The length of tilt_axis is proportional to the sine of the angle
+            // If it's heavily tilted (upside down), angle is large.
+            righting_torque += tilt_axis * 5000.0;
+            
+            // Add artificial gravity to keep it on the ground when driving on hills
+            force.force += -Vec3::Y * 500.0; 
 
             force.torque = turn_torque + righting_torque;
 
