@@ -24,15 +24,25 @@ const BLOCK_SIZE: f32 = 40.0;
 const ROAD_WIDTH: f32 = 16.0;
 
 pub fn get_terrain_height(x: f32, z: f32) -> f32 {
-    // Large rolling hills — two overlapping low-frequency waves, like SF neighborhoods
-    let large = (x / 420.0).sin() * (z / 370.0 + 0.6).cos() * 28.0
-              + (x / 390.0 + 1.3).cos() * (z / 440.0).sin() * 22.0;
-    // Medium hills add local variety
-    let medium = ((x + z * 0.4) / 160.0).sin() * 10.0
-               + ((z - x * 0.3) / 140.0).cos() * 9.0;
-    // Subtle surface texture
-    let small = (x / 68.0).sin() * 2.5 + (z / 62.0).cos() * 2.0;
-    // +22 baseline keeps most terrain above zero; floor at 0 creates flat valley areas
+    // Diagonal axes — symmetric under x↔z swap so heightfield and visual mesh
+    // always agree regardless of Rapier's internal row/column axis convention.
+    //   s = x+z : swapping x,z gives z+x = s  (fully symmetric)
+    //   d = x-z : swapping gives z-x = -d, but cos(-d) = cos(d)  (even function)
+    // Rule: use sin(s), cos(s), cos(d) — never sin(d).
+    let s = x + z;
+    let d = x - z;
+
+    // Large hills — SF-scale rolling terrain (~600 unit period, up to ±22 m amplitude)
+    let large = (s / 580.0).sin() * 22.0
+              + (d / 630.0).cos() * 20.0;
+    // Medium hills — neighbourhood scale
+    let medium = (s / 195.0).sin() * 9.0
+               + (d / 175.0).cos() * 8.0
+               + (s / 115.0).cos() * 4.0;
+    // Fine surface texture
+    let small = (d / 78.0).cos() * 2.5 + (s / 88.0).sin() * 2.0;
+
+    // +22 baseline keeps most terrain positive; .max(0) creates flat valleys
     (large + medium + small + 22.0).max(0.0)
 }
 
