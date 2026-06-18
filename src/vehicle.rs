@@ -35,6 +35,9 @@ pub struct Vehicle {
     pub steering_angle: f32,
     pub max_steering: f32,
     pub is_player: bool,
+    pub throttle: f32,
+    pub braking: bool,
+    pub drifting: bool,
 }
 
 #[derive(Component)]
@@ -61,7 +64,7 @@ fn spawn_player_car(
         MeshMaterial3d(materials.add(Color::srgb(0.9, 0.1, 0.1))),
         Transform::from_translation(start_pos),
         RigidBody::Dynamic,
-        Collider::cuboid(1.0, 0.5, 2.0),
+        Collider::round_cuboid(0.9, 0.4, 1.9, 0.1),
         Velocity::default(),
         ExternalForce::default(),
         ExternalImpulse::default(),
@@ -75,6 +78,9 @@ fn spawn_player_car(
             steering_angle: 0.0,
             max_steering: 1.047, // 60 degrees in radians
             is_player: true,
+            throttle: 0.0,
+            braking: false,
+            drifting: false,
         },
         Player,
         crate::game_state::LapTracker {
@@ -165,6 +171,10 @@ fn vehicle_update(
             if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
                 target_steering -= 1.0;
             }
+
+            vehicle.throttle = throttle;
+            vehicle.braking = braking;
+            vehicle.drifting = drifting;
 
             let steering_speed = difficulty.steering_sensitivity; // How fast the wheel turns
             let return_speed = difficulty.steering_sensitivity * 1.5; // How fast it returns to center

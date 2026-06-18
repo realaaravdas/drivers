@@ -12,6 +12,7 @@ impl Plugin for HudPlugin {
         app.add_systems(OnEnter(GameState::Racing), setup_hud)
            .add_systems(Update, (
                update_place_and_hud,
+               update_tesla_hud,
                add_minimap_markers,
                update_minimap,
            ).run_if(in_state(GameState::Racing)))
@@ -44,6 +45,21 @@ enum ScoreboardBtn { MainMenu, Continue }
 struct MinimapMarker {
     target: Entity,
 }
+
+#[derive(Component)]
+struct TeslaSpeedText;
+
+#[derive(Component)]
+struct TeslaRegenBar;
+
+#[derive(Component)]
+struct TeslaPowerBar;
+
+#[derive(Component)]
+struct TeslaDriftInd;
+
+#[derive(Component)]
+struct TeslaBrakeInd;
 
 fn setup_hud(
     mut commands: Commands,
@@ -81,6 +97,108 @@ fn setup_hud(
             TextColor(Color::WHITE),
             TimeText,
         ));
+    });
+
+    // Tesla-style HUD Container (Bottom-Left)
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(20.0),
+            left: Val::Px(20.0),
+            width: Val::Px(300.0),
+            height: Val::Px(140.0),
+            flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::SpaceBetween,
+            padding: UiRect::all(Val::Px(15.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.05, 0.05, 0.05, 0.8)),
+        HudEntity,
+    )).with_children(|parent| {
+        // Speed Display
+        parent.spawn((
+            Text::new("0 MPH"),
+            TextFont { font_size: 48.0, ..default() },
+            TextColor(Color::WHITE),
+            TeslaSpeedText,
+        ));
+
+        // Energy Bar Container
+        parent.spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Px(12.0),
+            margin: UiRect::vertical(Val::Px(10.0)),
+            ..default()
+        }).with_children(|bar_parent| {
+            // Background line (gray)
+            bar_parent.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.3, 0.3, 0.3)),
+            )).with_children(|bg| {
+                // Regen Bar (Left side)
+                bg.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: Val::Percent(50.0),
+                        top: Val::Px(0.0),
+                        height: Val::Percent(100.0),
+                        width: Val::Percent(0.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.0, 1.0, 0.0)), // Green for regen
+                    TeslaRegenBar,
+                ));
+                // Power Bar (Right side)
+                bg.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(50.0),
+                        top: Val::Px(0.0),
+                        height: Val::Percent(100.0),
+                        width: Val::Percent(0.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.1, 0.1, 0.1)), // Black/Dark for power
+                    TeslaPowerBar,
+                ));
+                // Center Notch
+                bg.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(49.5),
+                        width: Val::Percent(1.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::WHITE),
+                ));
+            });
+        });
+
+        // Indicators Row
+        parent.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            width: Val::Percent(100.0),
+            ..default()
+        }).with_children(|row| {
+            row.spawn((
+                Text::new("(P) E-BRAKE"),
+                TextFont { font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.3, 0.3, 0.3)), // Dim default
+                TeslaDriftInd,
+            ));
+            row.spawn((
+                Text::new("BRAKE"),
+                TextFont { font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.3, 0.3, 0.3)),
+                TeslaBrakeInd,
+            ));
+        });
     });
 
     // Minimap Camera (Orthographic, looking down)
@@ -208,6 +326,46 @@ fn update_minimap(
                 // Keep marker floating above the target
                 marker_transform.translation = pos + Vec3::Y * 50.0;
             }
+        }
+    }
+}
+
+fn update_tesla_hud(
+    player_query: Query<(&Vehicle, &bevy_rapier3d::prelude::Velocity), With<Player>>,
+    mut speed_text: Query<&mut Text, With<TeslaSpeedText>>,
+    mut power_bar: Query<&mut Node, (With<TeslaPowerBar>, Without<TeslaRegenBar>)>,
+    mut regen_bar: Query<&mut Node, (With<TeslaRegenBar>, Without<TeslaPowerBar>)>,
+    mut drift_ind: Query<&mut TextColor, (With<TeslaDriftInd>, Without<TeslaBrakeInd>)>,
+    mut brake_ind: Query<&mut TextColor, (With<TeslaBrakeInd>, Without<TeslaDriftInd>)>,
+) {
+    if let Some((vehicle, velocity)) = player_query.iter().next() {
+        if let Some(mut text) = speed_text.iter_mut().next() {
+            let speed_mph = (velocity.linear.length() * 2.23694).round() as u32;
+            text.0 = format!("{} MPH", speed_mph);
+        }
+
+        let throttle = vehicle.throttle.clamp(-1.0, 1.0);
+        if let Some(mut p_bar) = power_bar.iter_mut().next() {
+            if throttle > 0.0 && !vehicle.braking {
+                p_bar.width = Val::Percent(throttle * 50.0);
+            } else {
+                p_bar.width = Val::Percent(0.0);
+            }
+        }
+        if let Some(mut r_bar) = regen_bar.iter_mut().next() {
+            if throttle < 0.0 || vehicle.braking {
+                let amt = if vehicle.braking { 1.0 } else { -throttle };
+                r_bar.width = Val::Percent(amt * 50.0);
+            } else {
+                r_bar.width = Val::Percent(0.0);
+            }
+        }
+
+        if let Some(mut color) = drift_ind.iter_mut().next() {
+            color.0 = if vehicle.drifting { Color::srgb(1.0, 0.4, 0.0) } else { Color::srgb(0.3, 0.3, 0.3) };
+        }
+        if let Some(mut color) = brake_ind.iter_mut().next() {
+            color.0 = if vehicle.braking { Color::srgb(1.0, 0.0, 0.0) } else { Color::srgb(0.3, 0.3, 0.3) };
         }
     }
 }

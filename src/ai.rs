@@ -55,7 +55,7 @@ fn spawn_ai_cars(
             MeshMaterial3d(materials.add(Color::srgb(0.2, 0.8, 0.2))),
             Transform::from_translation(spawn_pos),
             RigidBody::Dynamic,
-            Collider::cuboid(1.0, 0.5, 2.0),
+            Collider::round_cuboid(0.9, 0.4, 1.9, 0.1),
             Velocity::default(),
             ExternalForce::default(),
             ExternalImpulse::default(),
@@ -69,6 +69,9 @@ fn spawn_ai_cars(
                 steering_angle: 0.0,
                 max_steering: 1.047, // 60 degrees in radians
                 is_player: false,
+                throttle: 0.0,
+                braking: false,
+                drifting: false,
             },
             AiDrivatar {
                 current_waypoint: 1, // Start aiming at the second waypoint
