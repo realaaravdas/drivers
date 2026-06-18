@@ -34,6 +34,12 @@ fn spawn_ai_cars(
         let row = (i + 1) / 2;
         let col = if i % 2 == 0 { 1.0 } else { -1.0 };
         let offset = Vec3::new(col * 4.0, 0.0, row as f32 * 8.0);
+        let mut spawn_pos = start_pos + offset;
+        
+        let x = spawn_pos.x;
+        let z = spawn_pos.z;
+        let surface_y = (x / 200.0).sin() * 20.0 + (z / 150.0).cos() * 15.0 + (x * z / 10000.0).sin() * 10.0;
+        spawn_pos.y = surface_y + 5.0;
         
         // 4 better, 4 same, 4 worse
         let spec_mod = if i <= 4 {
@@ -47,13 +53,14 @@ fn spawn_ai_cars(
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 4.0))),
             MeshMaterial3d(materials.add(Color::srgb(0.2, 0.8, 0.2))),
-            Transform::from_translation(start_pos + offset),
+            Transform::from_translation(spawn_pos),
             RigidBody::Dynamic,
             Collider::cuboid(1.0, 0.5, 2.0),
             Velocity::default(),
             ExternalForce::default(),
             ExternalImpulse::default(),
             ReadMassProperties::default(),
+            Ccd::enabled(),
             Damping { linear_damping: 0.5, angular_damping: 10.0 },
             Vehicle {
                 speed: 0.0,

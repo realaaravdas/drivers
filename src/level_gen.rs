@@ -131,7 +131,7 @@ fn generate_level(
     }
 
     level_data.waypoints = waypoints.clone();
-    level_data.start_pos = waypoints[0] + Vec3::Y * 2.0;
+    level_data.start_pos = waypoints[0] + Vec3::Y * 5.0;
 
     fn distance_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
         let pa = p - a;

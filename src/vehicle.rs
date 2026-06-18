@@ -66,6 +66,7 @@ fn spawn_player_car(
         ExternalForce::default(),
         ExternalImpulse::default(),
         ReadMassProperties::default(),
+        Ccd::enabled(),
         Damping { linear_damping: 0.5, angular_damping: 10.0 },
         Vehicle {
             speed: 0.0,
