@@ -160,14 +160,14 @@ fn generate_level(
             }
 
             if !is_track {
-                // Spawn building
+                // Spawn building, sinking it slightly into the terrain so it doesn't float
                 let height = rng.random_range(10.0..50.0);
                 let color = Color::srgb(rng.random_range(0.3..0.9), rng.random_range(0.3..0.9), rng.random_range(0.3..0.9));
                 
                 commands.spawn((
                     Mesh3d(meshes.add(Cuboid::new(BLOCK_SIZE - ROAD_WIDTH, height, BLOCK_SIZE - ROAD_WIDTH))),
                     MeshMaterial3d(materials.add(color)),
-                    Transform::from_xyz(pos.x, pos.y + height / 2.0, pos.z),
+                    Transform::from_xyz(pos.x, pos.y + height / 2.0 - 5.0, pos.z),
                     Collider::cuboid((BLOCK_SIZE - ROAD_WIDTH) / 2.0, height / 2.0, (BLOCK_SIZE - ROAD_WIDTH) / 2.0),
                     RaceEntity,
                 ));

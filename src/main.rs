@@ -12,6 +12,7 @@ use game_state::{GameState, GameDifficulty, RaceEntity};
 
 fn main() {
     App::new()
+        .insert_resource(ClearColor(Color::srgb(0.53, 0.81, 0.92))) // Sky Blue
         .add_plugins(DefaultPlugins)
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         // .add_plugins(RapierDebugRenderPlugin::default()) // Uncomment to debug physics
@@ -36,13 +37,23 @@ fn setup_environment(mut commands: Commands) {
         DirectionalLight {
             shadows_enabled: true,
             illuminance: 30000.0,
-            color: Color::WHITE,
+            color: Color::srgb(1.0, 0.98, 0.9), // Slightly warm sunlight
             ..default()
         },
-        Transform::from_xyz(10.0, 20.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
+        // Better angle for casting terrain shadows so elevation is visible
+        Transform::from_xyz(20.0, 30.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    // Ambient light is now a component or different, just relying on directional light for now
+    // Secondary light to simulate ambient light and fill in shadows
+    commands.spawn((
+        DirectionalLight {
+            shadows_enabled: false,
+            illuminance: 5000.0,
+            color: Color::srgb(0.6, 0.8, 1.0),
+            ..default()
+        },
+        Transform::from_xyz(-10.0, -10.0, -10.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 }
 
 fn check_exit_to_menu(
