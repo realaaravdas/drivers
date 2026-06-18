@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_camera::Viewport;
 use bevy_camera::visibility::RenderLayers;
 use crate::game_state::{GameState, LapTracker};
-use crate::vehicle::Player;
+use crate::vehicle::{Vehicle, Player};
 use crate::level_gen::LevelData;
 
 pub struct HudPlugin;
@@ -12,7 +12,7 @@ impl Plugin for HudPlugin {
         app.add_systems(OnEnter(GameState::Racing), setup_hud)
            .add_systems(Update, (
                update_place_and_hud,
-               update_minimap_camera,
+               add_minimap_markers,
            ).run_if(in_state(GameState::Racing)))
            .add_systems(OnExit(GameState::Racing), cleanup_hud)
            .add_systems(OnEnter(GameState::Scoreboard), setup_scoreboard)
@@ -39,6 +39,9 @@ struct ScoreboardEntity;
 #[derive(Component)]
 enum ScoreboardBtn { MainMenu, Continue }
 
+#[derive(Component)]
+struct MinimapMarker;
+
 fn setup_hud(
     mut commands: Commands,
     level_data: Res<LevelData>,
@@ -57,8 +60,10 @@ fn setup_hud(
             top: Val::Px(20.0),
             left: Val::Px(20.0),
             flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(15.0)),
             ..default()
         },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)), // Add dark background
         HudEntity,
     )).with_children(|parent| {
         parent.spawn((
@@ -82,7 +87,7 @@ fn setup_hud(
         Camera {
             order: 1, // Render after main camera
             viewport: Some(Viewport {
-                physical_position: UVec2::new(width.saturating_sub(300), 20),
+                physical_position: UVec2::new(width.saturating_sub(300), height.saturating_sub(300)), // Bottom right
                 physical_size: UVec2::new(280, 280),
                 ..default()
             }),
@@ -137,11 +142,36 @@ fn setup_hud(
     }
 }
 
-fn update_minimap_camera(
-    _minimap_query: Query<&Transform, (With<MinimapCamera>, Without<Player>)>,
-    _player_query: Query<&Transform, (With<Player>, Without<MinimapCamera>)>,
+fn add_minimap_markers(
+    mut commands: Commands,
+    query: Query<(Entity, &Vehicle, Option<&Children>)>,
+    marker_query: Query<&MinimapMarker>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Top-down camera. No need to follow the player, just center on 0,0 and scale out!
+    for (entity, vehicle, children) in query.iter() {
+        let has_marker = children.map_or(false, |c| {
+            c.iter().any(|child| marker_query.get(child).is_ok())
+        });
+
+        if !has_marker {
+            let color = if vehicle.is_player {
+                Color::srgb(1.0, 0.0, 0.0) // Red for player
+            } else {
+                Color::srgb(0.2, 0.2, 1.0) // Blue for AI
+            };
+
+            let marker = commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(6.0))), // Large sphere to be visible on minimap
+                MeshMaterial3d(materials.add(color)),
+                Transform::from_translation(Vec3::Y * 450.0), // High above track
+                RenderLayers::layer(1), // Minimap layer only
+                MinimapMarker,
+            )).id();
+
+            commands.entity(entity).add_children(&[marker]);
+        }
+    }
 }
 
 fn update_place_and_hud(

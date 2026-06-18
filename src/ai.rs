@@ -121,21 +121,27 @@ fn spawn_ai_cars(
 
 fn ai_update(
     difficulty: Res<GameDifficulty>,
-    mut query: Query<(Entity, &mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar, Option<&Children>)>,
+    mut query: Query<(Entity, &mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar, Option<&Children>, &mut crate::game_state::LapTracker)>,
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), (Without<Vehicle>, Without<Player>)>,
     player_query: Query<&Transform, (With<Player>, Without<AiDrivatar>)>,
     level_data: Res<LevelData>,
 ) {
     let player_transform = player_query.iter().next();
     
-    for (_entity, mut vehicle, mut force, transform, velocity, mut ai, children) in query.iter_mut() {
+    for (_entity, mut vehicle, mut force, transform, velocity, mut ai, children, mut tracker) in query.iter_mut() {
         if level_data.waypoints.is_empty() { continue; }
         
-        let target_wp = level_data.waypoints[ai.current_waypoint];
+        let target_wp = level_data.waypoints[tracker.next_waypoint];
         
         // Lap and Waypoint logic
         if transform.translation.distance(target_wp) < 15.0 {
-            ai.current_waypoint = (ai.current_waypoint + 1) % level_data.waypoints.len();
+            tracker.next_waypoint += 1;
+            if tracker.next_waypoint >= level_data.waypoints.len() {
+                tracker.next_waypoint = 0;
+                tracker.current_lap += 1;
+            }
+            // keep ai current_waypoint synced
+            ai.current_waypoint = tracker.next_waypoint;
         }
 
         let target_wp = level_data.waypoints[ai.current_waypoint];
