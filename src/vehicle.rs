@@ -54,8 +54,8 @@ fn spawn_player_car(
         Damping { linear_damping: 0.5, angular_damping: 2.0 },
         Vehicle {
             speed: 0.0,
-            max_speed: 60.0,
-            acceleration: 80.0, // Lower acceleration for inertia feel
+            max_speed: 120.0,
+            acceleration: 500.0, // Increased for much better speed
             steering_angle: 0.0,
             max_steering: 1.047, // 60 degrees in radians
             is_player: true,
