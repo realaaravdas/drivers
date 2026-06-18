@@ -32,34 +32,96 @@ fn generate_level(
 ) {
     let mut rng = rand::rng();
 
-    let num_rows = 41;
-    let num_cols = 41;
-    let grid_size = 40.0;
+    let num_rows = 321;
+    let num_cols = 321;
+    let grid_size = 10.0;
     let total_size = (num_rows - 1) as f32 * grid_size;
     let half_size = total_size / 2.0;
 
+    let get_height = |x: f32, z: f32| -> f32 {
+        let raw_h = (x / 400.0).sin() + (z / 300.0).cos() + (x * z / 80000.0).sin() * 0.5;
+        // Smooth the hills, create large flat areas
+        (raw_h * raw_h * raw_h) * 20.0
+    };
+
+    // 1. Generate waypoints FIRST
+    let num_points = rng.random_range(24..40);
+    let mut waypoints: Vec<Vec3> = Vec::new();
+    
+    for i in 0..num_points {
+        let angle = (i as f32 / num_points as f32) * std::f32::consts::TAU;
+        let radius = rng.random_range(12.0..24.0);
+        
+        let x = (angle.cos() * radius).round() * 40.0; // scale up
+        let z = (angle.sin() * radius).round() * 40.0;
+        
+        let mut pos = Vec3::new(x, 0.0, z);
+        pos.y = get_height(pos.x, pos.z);
+        
+        if waypoints.is_empty() || waypoints.last().unwrap().distance(pos) > 1.0 {
+            waypoints.push(pos);
+        }
+    }
+
+    level_data.waypoints = waypoints.clone();
+    level_data.start_pos = waypoints[0] + Vec3::Y * 5.0;
+
+    let distance_to_segment = |p: Vec3, a: Vec3, b: Vec3| -> f32 {
+        let pa = p - a;
+        let ba = b - a;
+        let h = (pa.dot(ba) / ba.dot(ba)).clamp(0.0, 1.0);
+        (pa - ba * h).length()
+    };
+
+    // 2. Generate heightfield and vertex colors
     let mut heights = Vec::with_capacity(num_rows * num_cols);
     let mut positions = Vec::with_capacity(num_rows * num_cols);
     let mut normals = Vec::with_capacity(num_rows * num_cols);
     let mut uvs = Vec::with_capacity(num_rows * num_cols);
+    let mut colors = Vec::with_capacity(num_rows * num_cols);
 
-    // Generate heightfield
     for z in 0..num_cols {
         for x in 0..num_rows {
             let px = x as f32 * grid_size - half_size;
             let pz = z as f32 * grid_size - half_size;
+            let h = get_height(px, pz);
             
-            // Simple noise using sine waves
-            let h = (px / 200.0).sin() * 20.0 + (pz / 150.0).cos() * 15.0 + (px * pz / 10000.0).sin() * 10.0;
             heights.push(h);
-
             positions.push([px, h, pz]);
-            normals.push([0.0, 1.0, 0.0]); // Will compute properly later, or just use up
+            normals.push([0.0, 1.0, 0.0]); 
             uvs.push([x as f32 / num_rows as f32, z as f32 / num_cols as f32]);
+
+            // Road coloring
+            let p2d = Vec3::new(px, 0.0, pz);
+            let mut min_dist = std::f32::MAX;
+            for i in 0..waypoints.len() {
+                let wp1 = waypoints[i];
+                let wp2 = waypoints[(i + 1) % waypoints.len()];
+                let w1_2d = Vec3::new(wp1.x, 0.0, wp1.z);
+                let w2_2d = Vec3::new(wp2.x, 0.0, wp2.z);
+                
+                let dist = distance_to_segment(p2d, w1_2d, w2_2d);
+                if dist < min_dist {
+                    min_dist = dist;
+                }
+            }
+
+            if min_dist < 1.0 { // Center line
+                colors.push([1.0, 0.9, 0.1, 1.0]); 
+            } else if min_dist < 15.0 { // Road
+                colors.push([0.3, 0.3, 0.3, 1.0]);
+            } else if min_dist < 18.0 { // Edge blend
+                let t = (min_dist - 15.0) / 3.0;
+                let r = 0.3 * (1.0 - t) + 0.2 * t;
+                let g = 0.3 * (1.0 - t) + 0.3 * t;
+                let b = 0.3 * (1.0 - t) + 0.2 * t;
+                colors.push([r, g, b, 1.0]);
+            } else { // Grass
+                colors.push([0.2, 0.3, 0.2, 1.0]);
+            }
         }
     }
 
-    // Compute normals
     for z in 0..num_cols {
         for x in 0..num_rows {
             let idx = z * num_rows + x;
@@ -98,57 +160,25 @@ fn generate_level(
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     terrain_mesh.insert_indices(Indices::U32(indices));
 
     commands.spawn((
         Mesh3d(meshes.add(terrain_mesh)),
-        MeshMaterial3d(materials.add(Color::srgb(0.2, 0.3, 0.2))),
+        MeshMaterial3d(materials.add(Color::WHITE)), // White so vertex colors show perfectly
         Transform::IDENTITY,
         collider,
         RaceEntity,
     ));
 
-    // Generate waypoints and map them to the terrain
-    let num_points = rng.random_range(12..20);
-    let mut waypoints: Vec<Vec3> = Vec::new();
-    
-    // Function to get height at any world position
-    let get_height = |pos: Vec3| -> f32 {
-        let x = pos.x;
-        let z = pos.z;
-        (x / 200.0).sin() * 20.0 + (z / 150.0).cos() * 15.0 + (x * z / 10000.0).sin() * 10.0
-    };
-
-    for i in 0..num_points {
-        let angle = (i as f32 / num_points as f32) * std::f32::consts::TAU;
-        let radius = rng.random_range(4.0..8.0); // Size of the track
-        
-        let x = (angle.cos() * radius).round() as i32;
-        let z = (angle.sin() * radius).round() as i32;
-        
-        let mut pos = Vec3::new(x as f32 * BLOCK_SIZE, 0.0, z as f32 * BLOCK_SIZE);
-        pos.y = get_height(pos);
-        
-        if waypoints.is_empty() || waypoints.last().unwrap().distance(pos) > 1.0 {
-            waypoints.push(pos);
-        }
-    }
-
-    level_data.waypoints = waypoints.clone();
-    level_data.start_pos = waypoints[0] + Vec3::Y * 5.0;
-
-    fn distance_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
-        let pa = p - a;
-        let ba = b - a;
-        let h = (pa.dot(ba) / ba.dot(ba)).clamp(0.0, 1.0);
-        (pa - ba * h).length()
-    }
-
-    // Generate Buildings
-    for x in -GRID_SIZE..=GRID_SIZE {
-        for z in -GRID_SIZE..=GRID_SIZE {
-            let mut pos = Vec3::new(x as f32 * BLOCK_SIZE, 0.0, z as f32 * BLOCK_SIZE);
-            pos.y = get_height(pos);
+    // 3. Generate Buildings
+    let building_grid = 30; // 60x60 grid
+    for x in -building_grid..=building_grid {
+        for z in -building_grid..=building_grid {
+            let pos_x = x as f32 * BLOCK_SIZE;
+            let pos_z = z as f32 * BLOCK_SIZE;
+            let mut pos = Vec3::new(pos_x, 0.0, pos_z);
+            pos.y = get_height(pos.x, pos.z);
             
             let mut is_track = false;
             let num_wp = waypoints.len();
@@ -156,7 +186,6 @@ fn generate_level(
                 let wp1 = waypoints[i];
                 let wp2 = waypoints[(i + 1) % num_wp];
                 
-                // ignore y for track distance
                 if distance_to_segment(Vec3::new(pos.x, 0.0, pos.z), Vec3::new(wp1.x, 0.0, wp1.z), Vec3::new(wp2.x, 0.0, wp2.z)) < BLOCK_SIZE * 0.8 {
                     is_track = true;
                     break;
@@ -164,7 +193,6 @@ fn generate_level(
             }
 
             if !is_track {
-                // Spawn building, sinking it slightly into the terrain so it doesn't float
                 let height = rng.random_range(10.0..50.0);
                 let color = Color::srgb(rng.random_range(0.3..0.9), rng.random_range(0.3..0.9), rng.random_range(0.3..0.9));
                 
@@ -179,7 +207,7 @@ fn generate_level(
         }
     }
 
-    // Spawn Ski Gates
+    // 4. Spawn Ski Gates
     let pole_mesh = meshes.add(Cylinder::new(0.5, 8.0));
     for (i, wp) in waypoints.iter().enumerate() {
         let color = if i == 0 { Color::srgb(1.0, 1.0, 1.0) } else { Color::srgb(1.0, 0.0, 0.0) };

@@ -98,27 +98,27 @@ fn spawn_ai_cars(
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(-1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(-1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
                 WheelFrontLeft,
             ));
             // Front Right
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
                 WheelFrontRight,
             ));
             // Back Left
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(-1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(-1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
             ));
             // Back Right
             parent.spawn((
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                Transform::from_xyz(1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
             ));
 
             // Exhaust Port
@@ -234,12 +234,12 @@ fn ai_update(
 
         let engine_force = forward * throttle * vehicle.acceleration;
         
-        let drag_force = -forward * current_fwd_vel * 1.0; // Lower drag
-        let grip_force = -right * current_lat_vel * 40.0; 
+        let drag_force = -forward * current_fwd_vel * 1.0;        let mut grip_factor = 30.0;
+        let grip_force = -right * current_lat_vel * grip_factor;
 
         let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
         let turn_dir = if current_fwd_vel < -0.1 { -1.0 } else { 1.0 };
-        let turn_torque = Vec3::Y * steering * 1000.0 * speed_factor * turn_dir;
+        let turn_torque = Vec3::Y * steering * 2000.0 * speed_factor * turn_dir;
 
         force.force = engine_force + drag_force + grip_force;
         
@@ -248,7 +248,9 @@ fn ai_update(
         
         let tilt_axis = up.cross(Vec3::Y);
         righting_torque += tilt_axis * 5000.0;
-        force.force += -Vec3::Y * 500.0;
+        
+        let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
+        force.force += -up * downforce;
 
         force.torque = turn_torque + righting_torque;
     }

@@ -103,27 +103,27 @@ fn spawn_player_car(
         parent.spawn((
             Mesh3d(wheel_mesh.clone()),
             MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(-1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            Transform::from_xyz(-1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
             WheelFrontLeft,
         ));
         // Front Right
         parent.spawn((
             Mesh3d(wheel_mesh.clone()),
             MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(1.2, -0.3, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            Transform::from_xyz(1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
             WheelFrontRight,
         ));
         // Back Left
         parent.spawn((
             Mesh3d(wheel_mesh.clone()),
             MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(-1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            Transform::from_xyz(-1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
         ));
         // Back Right
         parent.spawn((
             Mesh3d(wheel_mesh.clone()),
             MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            Transform::from_xyz(1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
         ));
 
         // Exhaust Port
@@ -222,9 +222,9 @@ fn vehicle_update(
             let drag_force = -forward * current_fwd_vel * 1.0; // Reduced drag for more coasting/inertia
 
             // Lateral friction (grip) - drifting reduces this!
-            let mut grip_factor = 40.0;
+            let mut grip_factor = 30.0;
             if drifting {
-                grip_factor = 10.0; // Lose grip, slide!
+                grip_factor = 8.0; // Lose grip, slide!
             }
             let grip_force = -right * current_lat_vel * grip_factor; 
 
@@ -232,7 +232,7 @@ fn vehicle_update(
             let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
             // Reverse steering if going backwards
             let turn_dir = if current_fwd_vel < -0.1 { -1.0 } else { 1.0 };
-            let turn_torque = Vec3::Y * steering * 1000.0 * speed_factor * turn_dir;
+            let turn_torque = Vec3::Y * steering * 2000.0 * speed_factor * turn_dir;
 
             force.force = engine_force + drag_force + grip_force;
 
@@ -247,8 +247,9 @@ fn vehicle_update(
             // If it's heavily tilted (upside down), angle is large.
             righting_torque += tilt_axis * 5000.0;
             
-            // Add artificial gravity to keep it on the ground when driving on hills
-            force.force += -Vec3::Y * 500.0; 
+            // Aerodynamic downforce to keep it on the ground at high speeds, without vibrating at low speeds
+            let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
+            force.force += -up * downforce;
 
             force.torque = turn_torque + righting_torque;
 
