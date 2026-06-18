@@ -92,7 +92,7 @@ fn spawn_ai_cars(
 fn ai_update(
     difficulty: Res<GameDifficulty>,
     mut query: Query<(Entity, &mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar, Option<&Children>)>,
-    mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
+    mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), (Without<Vehicle>, Without<Player>)>,
     player_query: Query<&Transform, (With<Player>, Without<AiDrivatar>)>,
     level_data: Res<LevelData>,
 ) {
