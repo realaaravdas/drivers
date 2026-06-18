@@ -49,9 +49,9 @@ fn spawn_player_car(
         Vehicle {
             speed: 0.0,
             max_speed: 40.0,
-            acceleration: 3000.0,
+            acceleration: 200.0, // Reduced from 3000
             steering_angle: 0.0,
-            max_steering: 0.5, // radians
+            max_steering: 1.0, 
             is_player: true,
         },
         Player,
@@ -85,17 +85,25 @@ fn vehicle_update(
             let forward: Vec3 = transform.forward().into();
             let right: Vec3 = transform.right().into();
             
-            // Simple arcade-sim style: apply forward force based on throttle
+            let current_fwd_vel = velocity.linear.dot(forward);
+            let current_lat_vel = velocity.linear.dot(right);
+
+            // Engine force
             let engine_force = forward * throttle * vehicle.acceleration;
             
-            // Apply lateral friction (grip)
-            let current_lat_vel = velocity.linear.dot(right);
-            let grip_force = -right * current_lat_vel * 150.0; // Magic number for grip
+            // Drag and rolling resistance
+            let drag_force = -forward * current_fwd_vel * 2.0;
 
-            // Turn the car model manually or apply torque
-            let turn_torque = Vec3::Y * steering * 2000.0;
+            // Lateral friction (grip) - simulate tires preventing sliding
+            let grip_force = -right * current_lat_vel * 40.0; 
 
-            force.force = engine_force + grip_force;
+            // Turn torque - cars only turn effectively when moving
+            let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
+            // Reverse steering if going backwards
+            let turn_dir = if current_fwd_vel < -0.1 { -1.0 } else { 1.0 };
+            let turn_torque = Vec3::Y * steering * 80.0 * speed_factor * turn_dir;
+
+            force.force = engine_force + drag_force + grip_force;
             force.torque = turn_torque;
         }
     }

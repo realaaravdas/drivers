@@ -45,9 +45,9 @@ fn spawn_ai_cars(
             Vehicle {
                 speed: 0.0,
                 max_speed: 35.0, // slightly slower than player
-                acceleration: 2500.0,
+                acceleration: 180.0,
                 steering_angle: 0.0,
-                max_steering: 0.5,
+                max_steering: 1.0,
                 is_player: false,
             },
             AiDrivatar {
@@ -89,14 +89,19 @@ fn ai_update(
 
         vehicle.steering_angle = steering * vehicle.max_steering;
 
+        let current_fwd_vel = velocity.linear.dot(forward);
+        let current_lat_vel = velocity.linear.dot(right);
+
         let engine_force = forward * throttle * vehicle.acceleration;
         
-        let current_lat_vel = velocity.linear.dot(right);
-        let grip_force = -right * current_lat_vel * 150.0; 
+        let drag_force = -forward * current_fwd_vel * 2.0;
+        let grip_force = -right * current_lat_vel * 40.0; 
 
-        let turn_torque = Vec3::Y * steering * 2000.0;
+        let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
+        let turn_dir = if current_fwd_vel < -0.1 { -1.0 } else { 1.0 };
+        let turn_torque = Vec3::Y * steering * 80.0 * speed_factor * turn_dir;
 
-        force.force = engine_force + grip_force;
+        force.force = engine_force + drag_force + grip_force;
         force.torque = turn_torque;
     }
 }
