@@ -27,9 +27,20 @@ fn spawn_ai_cars(
 ) {
     let start_pos = level_data.start_pos;
 
-    // Spawn 3 AI cars with an offset
-    for i in 1..=3 {
-        let offset = Vec3::new(i as f32 * 4.0, 0.0, i as f32 * 4.0);
+    // Spawn 12 AI cars with an offset
+    for i in 1..=12 {
+        let row = (i + 1) / 2;
+        let col = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let offset = Vec3::new(col * 4.0, 0.0, row as f32 * 8.0);
+        
+        // 4 better, 4 same, 4 worse
+        let spec_mod = if i <= 4 {
+            1.1
+        } else if i <= 8 {
+            1.0
+        } else {
+            0.9
+        };
         
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 4.0))),
@@ -45,8 +56,8 @@ fn spawn_ai_cars(
             Damping { linear_damping: 0.5, angular_damping: 10.0 },
             Vehicle {
                 speed: 0.0,
-                max_speed: difficulty.top_speed,
-                acceleration: difficulty.acceleration,
+                max_speed: difficulty.top_speed * spec_mod,
+                acceleration: difficulty.acceleration * spec_mod,
                 steering_angle: 0.0,
                 max_steering: 1.047, // 60 degrees in radians
                 is_player: false,
@@ -90,6 +101,14 @@ fn spawn_ai_cars(
                 Mesh3d(wheel_mesh.clone()),
                 MeshMaterial3d(wheel_mat.clone()),
                 Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            ));
+
+            // Exhaust Port
+            parent.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.1, 0.4))),
+                MeshMaterial3d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
+                Transform::from_xyz(0.6, -0.2, 2.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                crate::vehicle::ExhaustPort,
             ));
         });
     }

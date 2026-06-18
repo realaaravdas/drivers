@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
+use rand::RngExt;
 use crate::game_state::{GameState, RaceEntity, GameDifficulty};
 use crate::level_gen::LevelData;
 
@@ -8,8 +9,21 @@ pub struct VehiclePlugin;
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(GameState::Racing), spawn_player_car)
-           .add_systems(Update, vehicle_update.run_if(in_state(GameState::Racing)));
+           .add_systems(Update, (
+               vehicle_update,
+               spawn_exhaust_smoke,
+               update_smoke_particles,
+           ).run_if(in_state(GameState::Racing)));
     }
+}
+
+#[derive(Component)]
+pub struct ExhaustPort;
+
+#[derive(Component)]
+pub struct SmokeParticle {
+    pub timer: Timer,
+    pub velocity: Vec3,
 }
 
 #[derive(Component)]
@@ -98,6 +112,14 @@ fn spawn_player_car(
             Mesh3d(wheel_mesh.clone()),
             MeshMaterial3d(wheel_mat.clone()),
             Transform::from_xyz(1.2, -0.3, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+        ));
+
+        // Exhaust Port
+        parent.spawn((
+            Mesh3d(meshes.add(Cylinder::new(0.1, 0.4))),
+            MeshMaterial3d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
+            Transform::from_xyz(0.6, -0.2, 2.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+            ExhaustPort,
         ));
     });
 }
@@ -236,6 +258,63 @@ fn vehicle_update(
                     }
                 }
             }
+        }
+    }
+}
+
+fn spawn_exhaust_smoke(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    query: Query<&GlobalTransform, With<ExhaustPort>>,
+) {
+    let mut rng = rand::rng();
+    
+    for global_transform in query.iter() {
+        let chance = 0.2; // 20% chance per frame to spawn smoke
+        
+        if rand::random::<f32>() < chance {
+            let pos = global_transform.translation();
+            let back = global_transform.up(); // Because cylinder is rotated X 90 deg, up is Z
+            
+            let scatter = Vec3::new(
+                rng.random_range(-0.1..0.1),
+                rng.random_range(0.0..0.2),
+                rng.random_range(-0.1..0.1),
+            );
+            
+            let vel = back * rng.random_range(2.0..5.0) + scatter + Vec3::Y * 2.0;
+
+            commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(0.2).mesh().ico(2).unwrap())),
+                MeshMaterial3d(materials.add(Color::srgba(0.5, 0.5, 0.5, 0.8))),
+                Transform::from_translation(pos),
+                SmokeParticle {
+                    timer: Timer::from_seconds(rng.random_range(0.5..1.5), TimerMode::Once),
+                    velocity: vel,
+                },
+                RaceEntity,
+            ));
+        }
+    }
+}
+
+fn update_smoke_particles(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut Transform, &mut SmokeParticle)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut transform, mut particle) in query.iter_mut() {
+        particle.timer.tick(time.delta());
+        
+        if particle.timer.elapsed() >= particle.timer.duration() {
+            commands.entity(entity).despawn();
+        } else {
+            transform.translation += particle.velocity * dt;
+            // Shrink as it fades
+            let scale = particle.timer.fraction_remaining();
+            transform.scale = Vec3::splat(scale);
         }
     }
 }
