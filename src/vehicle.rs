@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy_rapier3d::prelude::*;
 use rand::RngExt;
 use crate::game_state::{GameState, RaceEntity, GameDifficulty};
@@ -8,11 +9,13 @@ pub struct VehiclePlugin;
 
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::Racing), (spawn_player_car, init_gate_materials))
+        app.add_systems(OnEnter(GameState::Racing), (spawn_player_car, init_gate_materials, init_tire_assets))
            .add_systems(Update, (
                vehicle_update,
                spawn_exhaust_smoke,
                update_smoke_particles,
+               tire_effects,
+               update_skid_marks,
                update_gate_colors,
            ).run_if(in_state(GameState::Racing)));
     }
@@ -69,6 +72,218 @@ pub struct WheelFrontLeft;
 #[derive(Component)]
 pub struct WheelFrontRight;
 
+/// Per-car tire state: tracks where the last skid decal was laid so we can
+/// space them out by distance instead of spawning one every frame.
+#[derive(Component)]
+pub struct TireMarks {
+    pub last_mark: Vec3,
+}
+
+/// A skid-mark decal on the ground; fades out (despawns) after its lifetime.
+#[derive(Component)]
+struct SkidMark {
+    life: Timer,
+}
+
+/// Shared meshes/materials for tire effects, built once per race.
+#[derive(Resource)]
+struct TireAssets {
+    skid_mesh: Handle<Mesh>,
+    skid_mat: Handle<StandardMaterial>,
+    smoke_mesh: Handle<Mesh>,
+    smoke_mat: Handle<StandardMaterial>,
+}
+
+fn init_tire_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.insert_resource(TireAssets {
+        // Thin flat quad lying on the ground = a tire mark.
+        skid_mesh: meshes.add(Cuboid::new(0.4, 0.02, 0.9)),
+        skid_mat: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.03, 0.03, 0.03, 0.85),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        smoke_mesh: meshes.add(Sphere::new(0.25).mesh().ico(1).unwrap()),
+        smoke_mat: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.85, 0.85, 0.85, 0.45),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+    });
+}
+
+/// Builds the visual body of a car — wheels (front two tagged for steering),
+/// cabin, tinted windows, rear spoiler, head/tail lights and exhaust — as
+/// children of `parent`. Shared by the player and AI so both look like cars.
+pub fn build_car_visuals(
+    parent: &mut ChildSpawnerCommands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    body_color: Color,
+) {
+    let wheel_mesh = meshes.add(Cylinder::new(0.4, 0.2));
+    let wheel_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.06, 0.06, 0.06),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let body_mat = materials.add(body_color);
+    let glass_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.05, 0.07, 0.11),
+        metallic: 0.4,
+        perceptual_roughness: 0.15,
+        ..default()
+    });
+    let trim_mat = materials.add(Color::srgb(0.05, 0.05, 0.05));
+
+    // Wheels — (x, z, is_front, is_left). Chassis forward is -Z.
+    let wheels = [
+        (-1.2_f32, -1.5_f32, true, true),
+        (1.2, -1.5, true, false),
+        (-1.2, 1.5, false, false),
+        (1.2, 1.5, false, false),
+    ];
+    for (x, z, front, left) in wheels {
+        let mut w = parent.spawn((
+            Mesh3d(wheel_mesh.clone()),
+            MeshMaterial3d(wheel_mat.clone()),
+            Transform::from_xyz(x, -0.1, z).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+        ));
+        if front && left { w.insert(WheelFrontLeft); }
+        if front && !left { w.insert(WheelFrontRight); }
+    }
+
+    // Cabin / roof (body colour).
+    parent.spawn((
+        Mesh3d(meshes.add(Cuboid::new(1.5, 0.55, 1.7))),
+        MeshMaterial3d(body_mat.clone()),
+        Transform::from_xyz(0.0, 0.62, 0.2),
+    ));
+    // Greenhouse / windows — a dark band standing slightly proud of the cabin.
+    parent.spawn((
+        Mesh3d(meshes.add(Cuboid::new(1.54, 0.4, 1.35))),
+        MeshMaterial3d(glass_mat),
+        Transform::from_xyz(0.0, 0.66, 0.2),
+    ));
+    // Rear spoiler wing.
+    parent.spawn((
+        Mesh3d(meshes.add(Cuboid::new(1.8, 0.08, 0.4))),
+        MeshMaterial3d(trim_mat.clone()),
+        Transform::from_xyz(0.0, 0.72, 1.95),
+    ));
+
+    // Head- and tail-lights (emissive so they glow).
+    let head_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 1.0, 0.9),
+        emissive: Color::srgb(1.6, 1.6, 1.2).to_linear(),
+        ..default()
+    });
+    let tail_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.4, 0.0, 0.0),
+        emissive: Color::srgb(1.4, 0.0, 0.0).to_linear(),
+        ..default()
+    });
+    for x in [-0.6_f32, 0.6] {
+        parent.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.35, 0.2, 0.08))),
+            MeshMaterial3d(head_mat.clone()),
+            Transform::from_xyz(x, 0.1, -2.02),
+        ));
+        parent.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.35, 0.2, 0.08))),
+            MeshMaterial3d(tail_mat.clone()),
+            Transform::from_xyz(x, 0.15, 2.02),
+        ));
+    }
+
+    // Exhaust port (also the smoke emitter).
+    parent.spawn((
+        Mesh3d(meshes.add(Cylinder::new(0.1, 0.4))),
+        MeshMaterial3d(trim_mat),
+        Transform::from_xyz(0.6, -0.2, 2.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        ExhaustPort,
+    ));
+}
+
+/// Lays skid-mark decals and puffs tire smoke when a car is sliding, launching,
+/// or braking hard. Works for the player and AI alike (reads throttle/brake/drift
+/// off the shared `Vehicle` component).
+fn tire_effects(
+    mut commands: Commands,
+    assets: Res<TireAssets>,
+    mut query: Query<(&Vehicle, &Transform, &Velocity, &mut TireMarks)>,
+) {
+    for (vehicle, transform, velocity, mut marks) in query.iter_mut() {
+        let forward: Vec3 = transform.forward().into();
+        let right: Vec3 = transform.right().into();
+        let fwd_vel = velocity.linear.dot(forward);
+        let lat_vel = velocity.linear.dot(right);
+
+        let sliding = lat_vel.abs() > 6.0;
+        let launching = vehicle.throttle > 0.5 && fwd_vel.abs() < 14.0 && velocity.linear.length() > 1.5;
+        let hard_brake = vehicle.braking && fwd_vel.abs() > 6.0;
+        if !(vehicle.drifting || sliding || launching || hard_brake) {
+            continue;
+        }
+
+        let yaw = forward.x.atan2(forward.z);
+
+        // Lay marks under the rear wheels, spaced by distance travelled.
+        if transform.translation.distance(marks.last_mark) > 0.8 {
+            marks.last_mark = transform.translation;
+            for sx in [-1.2_f32, 1.2] {
+                let wp = transform.transform_point(Vec3::new(sx, -0.5, 1.5));
+                let gy = crate::level_gen::get_terrain_height(wp.x, wp.z) + 0.05;
+                commands.spawn((
+                    Mesh3d(assets.skid_mesh.clone()),
+                    MeshMaterial3d(assets.skid_mat.clone()),
+                    Transform::from_xyz(wp.x, gy, wp.z).with_rotation(Quat::from_rotation_y(yaw)),
+                    SkidMark { life: Timer::from_seconds(12.0, TimerMode::Once) },
+                    RaceEntity,
+                ));
+            }
+        }
+
+        // Occasional smoke puff off the rear tires.
+        if rand::random::<f32>() < 0.35 {
+            let mut rng = rand::rng();
+            let sx = if rand::random::<bool>() { -1.2 } else { 1.2 };
+            let wp = transform.transform_point(Vec3::new(sx, -0.3, 1.5));
+            let vel = Vec3::Y * rng.random_range(1.0..2.5)
+                + right * sx.signum() * rng.random_range(0.5..1.5)
+                + forward * -rng.random_range(0.0..1.5);
+            commands.spawn((
+                Mesh3d(assets.smoke_mesh.clone()),
+                MeshMaterial3d(assets.smoke_mat.clone()),
+                Transform::from_translation(wp),
+                SmokeParticle {
+                    timer: Timer::from_seconds(rng.random_range(0.4..0.9), TimerMode::Once),
+                    velocity: vel,
+                },
+                RaceEntity,
+            ));
+        }
+    }
+}
+
+fn update_skid_marks(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut SkidMark)>,
+) {
+    for (entity, mut mark) in query.iter_mut() {
+        if mark.life.tick(time.delta()).is_finished() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 // --- Analytic terrain suspension -------------------------------------------
 // The terrain has no physics collider (see level_gen); cars float on this smooth
 // analytic suspension so slopes are stutter free.
@@ -77,6 +292,36 @@ const GROUND_FOLLOW: f32 = 8.0;  // how firmly it corrects ride-height error (1/
 const AIR_MARGIN: f32 = 1.2;     // above this much clearance the car is "airborne"
 const ALIGN_TORQUE: f32 = 400.0; // grounded slope-alignment spring
 const AIR_ALIGN_TORQUE: f32 = 200.0; // gentler upright spring while airborne
+
+// --- Realistic steering ----------------------------------------------------
+/// Angular damping on the car body — kept in sync with the `Damping` component so
+/// we can cancel it when driving the yaw rate directly (see `steering_yaw_rate`).
+pub const CAR_ANGULAR_DAMPING: f32 = 20.0;
+const WHEELBASE: f32 = 3.0;       // front-to-rear axle distance
+const MAX_LAT_ACCEL: f32 = 26.0;  // grip-limited lateral acceleration (the understeer cap)
+
+/// Target yaw rate (rad/s about world up) for a car, from a speed-sensitive
+/// bicycle model. Turning is realistic and self-limiting at speed:
+///
+/// * Bicycle model — `yaw = v · tan(δ) / wheelbase`, so turn rate scales with speed.
+/// * Grip cap — lateral accel `v · yaw` is capped, giving `yaw ≤ MAX_LAT_ACCEL / v`;
+///   the car understeers and can't spin out when going fast.
+/// * Speed-sensitive steering — usable lock also shrinks with speed on top of that.
+///
+/// `fwd_speed` is signed: negative (reversing) flips the turn direction.
+pub fn steering_yaw_rate(fwd_speed: f32, steering_angle: f32, max_speed: f32, drifting: bool) -> f32 {
+    let speed = fwd_speed.abs();
+    let speed_ratio = (speed / max_speed.max(1.0)).clamp(0.0, 1.0);
+    let authority = 1.0 - 0.55 * speed_ratio;          // full lock when slow → 45% at top speed
+    let angle = steering_angle * authority;
+    let yaw = fwd_speed * angle.tan() / WHEELBASE;
+    let cap = if speed > 1.0 {
+        MAX_LAT_ACCEL * if drifting { 1.7 } else { 1.0 } / speed
+    } else {
+        f32::MAX
+    };
+    yaw.clamp(-cap, cap)
+}
 
 /// Keeps a car smoothly planted on and aligned to the analytic terrain surface.
 ///
@@ -142,7 +387,7 @@ fn spawn_player_car(
         ExternalImpulse::default(),
         ReadMassProperties::default(),
         Ccd::enabled(),
-        Damping { linear_damping: 0.5, angular_damping: 20.0 },
+        Damping { linear_damping: 0.5, angular_damping: CAR_ANGULAR_DAMPING },
         Vehicle {
             speed: 0.0,
             max_speed: difficulty.top_speed,
@@ -165,46 +410,9 @@ fn spawn_player_car(
             finished_time: None,
             place: 1,
         },
-        RaceEntity,
+        (RaceEntity, TireMarks { last_mark: start_pos }),
     )).with_children(|parent| {
-        // Add Wheels
-        let wheel_mesh = meshes.add(Cylinder::new(0.4, 0.2));
-        let wheel_mat = materials.add(Color::srgb(0.1, 0.1, 0.1));
-
-        // Front Left
-        parent.spawn((
-            Mesh3d(wheel_mesh.clone()),
-            MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(-1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-            WheelFrontLeft,
-        ));
-        // Front Right
-        parent.spawn((
-            Mesh3d(wheel_mesh.clone()),
-            MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-            WheelFrontRight,
-        ));
-        // Back Left
-        parent.spawn((
-            Mesh3d(wheel_mesh.clone()),
-            MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(-1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-        ));
-        // Back Right
-        parent.spawn((
-            Mesh3d(wheel_mesh.clone()),
-            MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-        ));
-
-        // Exhaust Port
-        parent.spawn((
-            Mesh3d(meshes.add(Cylinder::new(0.1, 0.4))),
-            MeshMaterial3d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
-            Transform::from_xyz(0.6, -0.2, 2.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-            ExhaustPort,
-        ));
+        build_car_visuals(parent, &mut meshes, &mut materials, Color::srgb(0.9, 0.1, 0.1));
     });
 }
 
@@ -261,8 +469,6 @@ fn vehicle_update(
                 vehicle.steering_angle += diff.signum() * step;
             }
 
-            let steering = vehicle.steering_angle / vehicle.max_steering;
-
             // Visual wheel steering
             if let Some(children) = children {
                 for child in children.iter() {
@@ -294,20 +500,19 @@ fn vehicle_update(
             let drag_force = -forward * current_fwd_vel * 1.0; // Reduced drag for more coasting/inertia
 
             // Lateral friction (grip) - drifting reduces this!
-            let mut grip_factor = 30.0;
+            let mut grip_factor = 39.0;
             if drifting {
-                grip_factor = 8.0; // Lose grip, slide!
+                grip_factor = 10.0; // Lose grip, slide!
             }
-            let grip_force = -right * current_lat_vel * grip_factor; 
-
-            // Turn torque - cars only turn effectively when moving
-            let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
-            // Reverse steering if going backwards
-            let turn_dir = if current_fwd_vel < -0.1 { -1.0 } else { 1.0 };
-            let turn_torque = Vec3::Y * steering * 2000.0 * speed_factor * turn_dir;
+            let grip_force = -right * current_lat_vel * grip_factor;
 
             force.force = engine_force + drag_force + grip_force;
-            force.torque = turn_torque;
+            force.torque = Vec3::ZERO;
+
+            // Realistic, speed-limited turning: drive the yaw rate directly, cancelling
+            // the body's angular damping so it lands on target this step.
+            let target_yaw = steering_yaw_rate(current_fwd_vel, vehicle.steering_angle, vehicle.max_speed, drifting);
+            velocity.angular.y = target_yaw * (1.0 + CAR_ANGULAR_DAMPING * dt);
 
             // Smoothly follow and align to the analytic terrain (no ground collider).
             apply_terrain_follow(transform, &mut velocity, &mut force);

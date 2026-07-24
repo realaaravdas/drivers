@@ -19,6 +19,7 @@ pub struct GameDifficulty {
     pub top_speed: f32,
     pub acceleration: f32,
     pub laps: u32,
+    pub fov: f32, // camera vertical field of view, in degrees
 }
 
 impl Default for GameDifficulty {
@@ -29,6 +30,7 @@ impl Default for GameDifficulty {
             top_speed: 120.0,
             acceleration: 500.0,
             laps: 3,
+            fov: 75.0, // a touch wider than Bevy's 45° default — zoomed out for a better view
         }
     }
 }

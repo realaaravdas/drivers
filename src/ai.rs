@@ -61,7 +61,7 @@ fn spawn_ai_cars(
             ExternalImpulse::default(),
             ReadMassProperties::default(),
             Ccd::enabled(),
-            Damping { linear_damping: 0.5, angular_damping: 20.0 },
+            Damping { linear_damping: 0.5, angular_damping: crate::vehicle::CAR_ANGULAR_DAMPING },
             Vehicle {
                 speed: 0.0,
                 max_speed: difficulty.top_speed * spec_mod,
@@ -88,46 +88,9 @@ fn spawn_ai_cars(
                 finished_time: None,
                 place: 1,
             },
-            RaceEntity,
+            (RaceEntity, crate::vehicle::TireMarks { last_mark: spawn_pos }),
         )).with_children(|parent| {
-            // Add Wheels
-            let wheel_mesh = meshes.add(Cylinder::new(0.4, 0.2));
-            let wheel_mat = materials.add(Color::srgb(0.1, 0.1, 0.1));
-
-            // Front Left
-            parent.spawn((
-                Mesh3d(wheel_mesh.clone()),
-                MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(-1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-                WheelFrontLeft,
-            ));
-            // Front Right
-            parent.spawn((
-                Mesh3d(wheel_mesh.clone()),
-                MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(1.2, -0.1, -1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-                WheelFrontRight,
-            ));
-            // Back Left
-            parent.spawn((
-                Mesh3d(wheel_mesh.clone()),
-                MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(-1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-            ));
-            // Back Right
-            parent.spawn((
-                Mesh3d(wheel_mesh.clone()),
-                MeshMaterial3d(wheel_mat.clone()),
-                Transform::from_xyz(1.2, -0.1, 1.5).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-            ));
-
-            // Exhaust Port
-            parent.spawn((
-                Mesh3d(meshes.add(Cylinder::new(0.1, 0.4))),
-                MeshMaterial3d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
-                Transform::from_xyz(0.6, -0.2, 2.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-                crate::vehicle::ExhaustPort,
-            ));
+            crate::vehicle::build_car_visuals(parent, &mut meshes, &mut materials, Color::srgb(0.2, 0.8, 0.2));
         });
     }
 }
@@ -139,9 +102,11 @@ fn ai_update(
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), (Without<Vehicle>, Without<Player>)>,
     player_query: Query<&Transform, (With<Player>, Without<AiDrivatar>)>,
     level_data: Res<LevelData>,
+    rapier: ReadRapierContext,
 ) {
     let dt = time.delta_secs();
     let player_transform = player_query.iter().next();
+    let rapier_ctx = rapier.single().ok();
     
     for (_entity, mut vehicle, mut force, transform, mut velocity, mut ai, children, mut tracker) in query.iter_mut() {
         if level_data.waypoints.is_empty() { continue; }
@@ -196,6 +161,25 @@ fn ai_update(
             throttle = 0.7 * difficulty.ai_aggressiveness; // Brake slightly, but don't become snails
         }
 
+        // Obstacle avoidance: feeler rays detect buildings and other cars ahead
+        // (terrain has no collider, so rays only hit real obstacles). We steer away
+        // from the closer side and back off the throttle when something's dead ahead.
+        if let Some(ctx) = &rapier_ctx {
+            let fwd_speed = velocity.linear.dot(forward);
+            let feel = 7.0 + fwd_speed.max(0.0) * 0.35;
+            let origin = transform.translation + forward * 2.6 + Vec3::Y * 0.2;
+            let left_dir = (forward - right * 0.6).normalize_or_zero();
+            let right_dir = (forward + right * 0.6).normalize_or_zero();
+            let ray = |dir: Vec3| ctx.cast_ray(origin, dir, feel, false, QueryFilter::default()).map(|(_, t)| t).unwrap_or(feel);
+            let (dl, dr, dc) = (ray(left_dir), ray(right_dir), ray(forward));
+            // avoid > 0 → obstacle nearer on the right → steer left (positive), and vice versa.
+            let avoid = (1.0 - dr / feel) - (1.0 - dl / feel);
+            target_steering = (target_steering + avoid * 2.2).clamp(-1.0, 1.0);
+            if dc < feel * 0.55 {
+                throttle *= 0.4;
+            }
+        }
+
         // Check if stuck
         if velocity.linear.length() < 2.0 {
             ai.stuck_time += dt;
@@ -215,7 +199,6 @@ fn ai_update(
 
         // Smooth steering
         vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.1;
-        let steering = vehicle.steering_angle / vehicle.max_steering;
 
         // Visual wheel steering
         if let Some(children) = children {
@@ -235,15 +218,15 @@ fn ai_update(
         let engine_force = forward * throttle * vehicle.acceleration;
         
         let drag_force = -forward * current_fwd_vel * 1.0;
-        let grip_factor = 30.0;
+        let grip_factor = 39.0;
         let grip_force = -right * current_lat_vel * grip_factor;
 
-        let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
-        let turn_dir = if current_fwd_vel < -0.1 { -1.0 } else { 1.0 };
-        let turn_torque = Vec3::Y * steering * 2000.0 * speed_factor * turn_dir;
-
         force.force = engine_force + drag_force + grip_force;
-        force.torque = turn_torque;
+        force.torque = Vec3::ZERO;
+
+        // Realistic, speed-limited turning (same model as the player).
+        let target_yaw = crate::vehicle::steering_yaw_rate(current_fwd_vel, vehicle.steering_angle, vehicle.max_speed, false);
+        velocity.angular.y = target_yaw * (1.0 + crate::vehicle::CAR_ANGULAR_DAMPING * dt);
 
         // Smoothly follow and align to the analytic terrain (no ground collider).
         crate::vehicle::apply_terrain_follow(transform, &mut velocity, &mut force);

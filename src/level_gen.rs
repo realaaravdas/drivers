@@ -137,12 +137,18 @@ fn generate_level(
                 }
             }
 
-            if min_dist < 3.5 { // Center line — wide enough to be clearly visible at 8m grid
-                colors.push([1.0, 0.92, 0.1, 1.0]);
-            } else if min_dist < 16.0 { // Road — 16m aligns exactly with 2× grid spacing → sharp edge
-                colors.push([0.48, 0.48, 0.48, 1.0]);
-            } else { // Grass — high contrast with road, no blend zone
-                colors.push([0.12, 0.42, 0.08, 1.0]);
+            // High-contrast road so it reads clearly against the terrain. Lines are
+            // kept wide (≥ one grid cell) so they render solidly at this 8 m vertex
+            // resolution instead of aliasing into dots:
+            //   bright yellow center · dark asphalt · white edge lines · green grass.
+            if min_dist < 4.0 { // Wide yellow center line
+                colors.push([1.0, 0.85, 0.0, 1.0]);
+            } else if min_dist < 12.5 { // Dark asphalt — strong contrast with lines and grass
+                colors.push([0.13, 0.13, 0.15, 1.0]);
+            } else if min_dist < 16.0 { // White edge lines mark the road boundary
+                colors.push([0.92, 0.92, 0.92, 1.0]);
+            } else { // Grass
+                colors.push([0.22, 0.47, 0.12, 1.0]);
             }
         }
     }

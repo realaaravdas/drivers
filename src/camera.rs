@@ -1,12 +1,31 @@
 use bevy::prelude::*;
-use crate::game_state::GameState;
+use crate::game_state::{GameState, GameDifficulty};
 
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_camera)
-           .add_systems(Update, camera_follow.run_if(in_state(GameState::Racing)));
+           .add_systems(Update, (
+               camera_follow.run_if(in_state(GameState::Racing)),
+               apply_camera_fov,
+           ));
+    }
+}
+
+/// Keeps the camera's field of view in sync with the player-chosen FOV setting.
+/// Higher FOV = wider view = zoomed further out.
+fn apply_camera_fov(
+    difficulty: Res<GameDifficulty>,
+    mut query: Query<&mut Projection, With<MainCamera>>,
+) {
+    let fov = difficulty.fov.to_radians();
+    for mut projection in query.iter_mut() {
+        if let Projection::Perspective(perspective) = projection.as_mut() {
+            if (perspective.fov - fov).abs() > f32::EPSILON {
+                perspective.fov = fov;
+            }
+        }
     }
 }
 
@@ -17,6 +36,10 @@ fn setup_camera(mut commands: Commands, query: Query<Entity, With<MainCamera>>) 
     if query.is_empty() {
         commands.spawn((
             Camera3d::default(),
+            Projection::Perspective(PerspectiveProjection {
+                fov: 75.0_f32.to_radians(), // matches GameDifficulty default; apply_camera_fov keeps it in sync
+                ..default()
+            }),
             Transform::from_xyz(0.0, 5.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
             bevy::ui::IsDefaultUiCamera, // Designates this as the target for UI elements
             MainCamera,

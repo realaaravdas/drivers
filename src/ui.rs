@@ -16,6 +16,7 @@ impl Plugin for UiPlugin {
                speed_interaction,
                accel_interaction,
                laps_interaction,
+               fov_interaction,
                update_settings_text
            ).run_if(in_state(GameState::MainMenu)))
            .add_systems(OnExit(GameState::MainMenu), cleanup_main_menu)
@@ -60,6 +61,12 @@ enum LapsBtn { Decrease, Increase }
 
 #[derive(Component)]
 struct LapsText;
+
+#[derive(Component)]
+enum FovBtn { Decrease, Increase }
+
+#[derive(Component)]
+struct FovText;
 
 fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
     commands.spawn((
@@ -153,6 +160,14 @@ fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
                 row.spawn((Button, btn_node.clone(), btn_color, LapsBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
                 row.spawn((Text::new(format!("{}", difficulty.laps)), text_font.clone(), text_color, val_node.clone(), LapsText));
                 row.spawn((Button, btn_node.clone(), btn_color, LapsBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
+            });
+
+            // Field of View row
+            settings.spawn(row_node.clone()).with_children(|row| {
+                row.spawn((Text::new("Field of View"), text_font.clone(), text_color, label_node.clone()));
+                row.spawn((Button, btn_node.clone(), btn_color, FovBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
+                row.spawn((Text::new(format!("{:.0}", difficulty.fov)), text_font.clone(), text_color, val_node.clone(), FovText));
+                row.spawn((Button, btn_node.clone(), btn_color, FovBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
             });
         });
 
@@ -265,13 +280,28 @@ fn laps_interaction(
     }
 }
 
+fn fov_interaction(
+    interaction_query: Query<(&Interaction, &FovBtn), Changed<Interaction>>,
+    mut difficulty: ResMut<GameDifficulty>,
+) {
+    for (interaction, btn) in &interaction_query {
+        if *interaction == Interaction::Pressed {
+            match btn {
+                FovBtn::Decrease => difficulty.fov = (difficulty.fov - 5.0).max(50.0),
+                FovBtn::Increase => difficulty.fov = (difficulty.fov + 5.0).min(110.0),
+            }
+        }
+    }
+}
+
 fn update_settings_text(
     difficulty: Res<GameDifficulty>,
-    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>)>,
-    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>)>,
-    mut speed_text: Query<&mut Text, (With<SpeedText>, Without<DifficultyText>, Without<SensitivityText>, Without<AccelText>, Without<LapsText>)>,
-    mut accel_text: Query<&mut Text, (With<AccelText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<LapsText>)>,
-    mut laps_text: Query<&mut Text, (With<LapsText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>)>,
+    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
+    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
+    mut speed_text: Query<&mut Text, (With<SpeedText>, Without<DifficultyText>, Without<SensitivityText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
+    mut accel_text: Query<&mut Text, (With<AccelText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<LapsText>, Without<FovText>)>,
+    mut laps_text: Query<&mut Text, (With<LapsText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<FovText>)>,
+    mut fov_text: Query<&mut Text, (With<FovText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>)>,
 ) {
     if difficulty.is_changed() {
         for mut text in &mut diff_text {
@@ -288,6 +318,9 @@ fn update_settings_text(
         }
         for mut text in &mut laps_text {
             text.0 = format!("{}", difficulty.laps);
+        }
+        for mut text in &mut fov_text {
+            text.0 = format!("{:.0}", difficulty.fov);
         }
     }
 }
