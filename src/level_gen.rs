@@ -184,20 +184,15 @@ fn generate_level(
     terrain_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     terrain_mesh.insert_indices(Indices::U32(indices.clone()));
 
-    // Heightfield collider: no internal-edge artifacts, no ghost collisions.
-    // Rapier's heightfield is purpose-built for terrain — objects glide smoothly over it.
-    let collider = Collider::heightfield(
-        heights.clone(),
-        num_rows,
-        num_cols,
-        Vec3::new(total_size, 1.0, total_size),
-    );
-
+    // No terrain collider on purpose: cars ride the smooth *analytic* surface via
+    // `vehicle::apply_terrain_follow` instead of colliding with this faceted mesh.
+    // A rigid box on an 8 m-faceted heightfield catches on every triangle edge
+    // (the "imaginary bumps"); following the continuous height function is stutter
+    // free. Buildings and cars keep their own colliders, so obstacles still work.
     commands.spawn((
         Mesh3d(meshes.add(terrain_mesh)),
         MeshMaterial3d(materials.add(Color::WHITE)), // White so vertex colors show perfectly
         Transform::IDENTITY,
-        collider,
         RaceEntity,
     ));
 

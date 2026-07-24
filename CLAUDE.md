@@ -8,12 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the game (dev build — deps are pre-optimized via Cargo.toml)
 cargo run
 
-# Optimized release build
+# Fastest iteration: builds Bevy as a shared library (dynamic linking)
+cargo run --features fast-dev
+
+# Optimized release build (fast-dev has no effect here)
 cargo build --release
 
 # Check for compile errors without building
 cargo check
 ```
+
+Edition is 2024.
 
 There are no tests in this project.
 
@@ -30,6 +35,8 @@ Splash → MainMenu → Loading → GeneratingLevel → Racing → Scoreboard �
 ```
 
 `GameDifficulty` is a Bevy resource set in the menu and read throughout — it carries AI aggressiveness, steering sensitivity, top speed, acceleration, and lap count.
+
+During a race, `Escape` returns to the main menu. Everything spawned for a race (terrain, player, AI, waypoints) is tagged with the `RaceEntity` marker component; `cleanup_racing` in `main.rs` runs `OnExit(GameState::Racing)` and despawns all `RaceEntity` entities. Anything spawned into the racing world must carry this marker or it will leak across races.
 
 ### Source Modules
 
@@ -54,7 +61,7 @@ Splash → MainMenu → Loading → GeneratingLevel → Racing → Scoreboard �
 
 ### AI System
 
-AI opponents are spawned in a staggered 4×3 grid at race start. Three skill tiers relative to player specs: +10% (4 cars), 1.0× (4 cars), 0.9× (4 cars). Each `AiDrivatar` component stores its current waypoint index, stuck timer, and reversing state.
+AI opponents are spawned as 12 cars in a 2-column × 6-row staggered formation behind the start position at race start. Three skill tiers scale `top_speed` and `acceleration` relative to player specs: 1.1× (cars 1–4), 1.0× (cars 5–8), 0.9× (cars 9–12). Each `AiDrivatar` component stores its current waypoint index, stuck timer, and reversing timer.
 
 ### Dependency Optimization
 

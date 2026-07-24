@@ -69,6 +69,58 @@ pub struct WheelFrontLeft;
 #[derive(Component)]
 pub struct WheelFrontRight;
 
+// --- Analytic terrain suspension -------------------------------------------
+// The terrain has no physics collider (see level_gen); cars float on this smooth
+// analytic suspension so slopes are stutter free.
+const RIDE_HEIGHT: f32 = 0.6;    // chassis-center height above the surface
+const GROUND_FOLLOW: f32 = 8.0;  // how firmly it corrects ride-height error (1/s)
+const AIR_MARGIN: f32 = 1.2;     // above this much clearance the car is "airborne"
+const ALIGN_TORQUE: f32 = 400.0; // grounded slope-alignment spring
+const AIR_ALIGN_TORQUE: f32 = 200.0; // gentler upright spring while airborne
+
+/// Keeps a car smoothly planted on and aligned to the analytic terrain surface.
+///
+/// Vertical motion is driven directly: we feed-forward the rate the ground rises
+/// under the car (`∇h · velocity`) so it tracks the surface exactly at any speed,
+/// plus a proportional term that removes residual ride-height error. Orientation
+/// gets a critically-damped torque toward a smooth, wide-baseline surface normal.
+/// Call this *after* the caller has set `force.force`/`force.torque` for driving.
+pub fn apply_terrain_follow(
+    transform: &Transform,
+    velocity: &mut Velocity,
+    force: &mut ExternalForce,
+) {
+    let pos = transform.translation;
+    let ground_y = crate::level_gen::get_terrain_height(pos.x, pos.z);
+    let y_error = (ground_y + RIDE_HEIGHT) - pos.y;
+    let up: Vec3 = transform.up().into();
+
+    if y_error > -AIR_MARGIN {
+        // Smooth surface gradient — central difference over a wide baseline so the
+        // car follows the visible slope, not fine local texture.
+        const E: f32 = 4.0;
+        let dhdx = (crate::level_gen::get_terrain_height(pos.x + E, pos.z)
+            - crate::level_gen::get_terrain_height(pos.x - E, pos.z)) / (2.0 * E);
+        let dhdz = (crate::level_gen::get_terrain_height(pos.x, pos.z + E)
+            - crate::level_gen::get_terrain_height(pos.x, pos.z - E)) / (2.0 * E);
+
+        // Feed-forward how fast the ground rises under us, then correct any drift.
+        let surface_vy = dhdx * velocity.linear.x + dhdz * velocity.linear.z;
+        velocity.linear.y = surface_vy + y_error * GROUND_FOLLOW;
+
+        // Align the chassis "up" to the surface normal.
+        let normal = Vec3::new(-dhdx, 1.0, -dhdz).normalize();
+        let axis = up.cross(normal).normalize_or_zero();
+        let angle = up.dot(normal).clamp(-1.0, 1.0).acos();
+        force.torque += axis * angle * ALIGN_TORQUE;
+    } else {
+        // Airborne: let gravity bring us down, but keep roughly upright to land on wheels.
+        let axis = up.cross(Vec3::Y).normalize_or_zero();
+        let angle = up.dot(Vec3::Y).clamp(-1.0, 1.0).acos();
+        force.torque += axis * angle * AIR_ALIGN_TORQUE;
+    }
+}
+
 fn spawn_player_car(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -159,13 +211,13 @@ fn spawn_player_car(
 fn vehicle_update(
     time: Res<Time>,
     difficulty: Res<GameDifficulty>,
-    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &Velocity, Option<&Children>, Option<&mut crate::game_state::LapTracker>)>,
+    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &mut Velocity, Option<&Children>, Option<&mut crate::game_state::LapTracker>)>,
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
     level_data: Res<crate::level_gen::LevelData>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
     let dt = time.delta_secs();
-    for (mut vehicle, mut force, transform, velocity, children, lap_tracker) in query.iter_mut() {
+    for (mut vehicle, mut force, transform, mut velocity, children, lap_tracker) in query.iter_mut() {
         if vehicle.is_player {
             let mut throttle = 0.0;
             let mut target_steering = 0.0;
@@ -255,46 +307,10 @@ fn vehicle_update(
             let turn_torque = Vec3::Y * steering * 2000.0 * speed_factor * turn_dir;
 
             force.force = engine_force + drag_force + grip_force;
+            force.torque = turn_torque;
 
-            // Self-righting and slope alignment
-            let up: Vec3 = transform.up().into();
-            let mut righting_torque = Vec3::ZERO;
-
-            let ground_y = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z);
-            let height_above_ground = transform.translation.y - ground_y;
-            
-            // Calculate ground normal using finite difference
-            let h_right = crate::level_gen::get_terrain_height(transform.translation.x + 1.0, transform.translation.z);
-            let h_forward = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z + 1.0);
-            let normal = Vec3::new(ground_y - h_right, 1.0, ground_y - h_forward).normalize();
-
-            // Ground alignment (suspension proxy)
-            if height_above_ground < 3.0 {
-                let mut tilt_axis = up.cross(normal);
-                let dot = up.dot(normal);
-                if tilt_axis.length() < 0.001 && dot < 0.0 {
-                    tilt_axis = transform.forward().into();
-                }
-                let angle = dot.clamp(-1.0, 1.0).acos();
-                righting_torque += tilt_axis.normalize_or_zero() * angle * 400.0;
-                
-                // Aerodynamic downforce to keep it planted at high speeds
-                let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
-                force.force += -normal * downforce;
-            } else {
-                // If we are high in the air, apply massive gravity to bring it back down
-                // and a bit of righting torque to make sure it lands on its wheels
-                force.force += -Vec3::Y * 400.0;
-                let mut tilt_axis = up.cross(Vec3::Y);
-                let dot = up.dot(Vec3::Y);
-                if tilt_axis.length() < 0.001 && dot < 0.0 {
-                    tilt_axis = transform.forward().into();
-                }
-                let angle = dot.clamp(-1.0, 1.0).acos();
-                righting_torque += tilt_axis.normalize_or_zero() * angle * 200.0;
-            }
-
-            force.torque = turn_torque + righting_torque;
+            // Smoothly follow and align to the analytic terrain (no ground collider).
+            apply_terrain_follow(transform, &mut velocity, &mut force);
 
             // Lap tracking logic
             if let Some(mut tracker) = lap_tracker {

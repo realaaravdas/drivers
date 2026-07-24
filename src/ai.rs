@@ -135,7 +135,7 @@ fn spawn_ai_cars(
 fn ai_update(
     time: Res<Time>,
     difficulty: Res<GameDifficulty>,
-    mut query: Query<(Entity, &mut Vehicle, &mut ExternalForce, &Transform, &Velocity, &mut AiDrivatar, Option<&Children>, &mut crate::game_state::LapTracker)>,
+    mut query: Query<(Entity, &mut Vehicle, &mut ExternalForce, &Transform, &mut Velocity, &mut AiDrivatar, Option<&Children>, &mut crate::game_state::LapTracker)>,
     mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), (Without<Vehicle>, Without<Player>)>,
     player_query: Query<&Transform, (With<Player>, Without<AiDrivatar>)>,
     level_data: Res<LevelData>,
@@ -143,7 +143,7 @@ fn ai_update(
     let dt = time.delta_secs();
     let player_transform = player_query.iter().next();
     
-    for (_entity, mut vehicle, mut force, transform, velocity, mut ai, children, mut tracker) in query.iter_mut() {
+    for (_entity, mut vehicle, mut force, transform, mut velocity, mut ai, children, mut tracker) in query.iter_mut() {
         if level_data.waypoints.is_empty() { continue; }
         
         let target_wp = level_data.waypoints[tracker.next_waypoint];
@@ -234,7 +234,8 @@ fn ai_update(
 
         let engine_force = forward * throttle * vehicle.acceleration;
         
-        let drag_force = -forward * current_fwd_vel * 1.0;        let mut grip_factor = 30.0;
+        let drag_force = -forward * current_fwd_vel * 1.0;
+        let grip_factor = 30.0;
         let grip_force = -right * current_lat_vel * grip_factor;
 
         let speed_factor = (current_fwd_vel.abs() / 5.0).clamp(0.0, 1.0);
@@ -242,39 +243,9 @@ fn ai_update(
         let turn_torque = Vec3::Y * steering * 2000.0 * speed_factor * turn_dir;
 
         force.force = engine_force + drag_force + grip_force;
-        
-        let up: Vec3 = transform.up().into();
-        let mut righting_torque = Vec3::ZERO;
-        
-        let ground_y = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z);
-        let height_above_ground = transform.translation.y - ground_y;
-        
-        let h_right = crate::level_gen::get_terrain_height(transform.translation.x + 1.0, transform.translation.z);
-        let h_forward = crate::level_gen::get_terrain_height(transform.translation.x, transform.translation.z + 1.0);
-        let normal = Vec3::new(ground_y - h_right, 1.0, ground_y - h_forward).normalize();
+        force.torque = turn_torque;
 
-        if height_above_ground < 3.0 {
-            let mut tilt_axis = up.cross(normal);
-            let dot = up.dot(normal);
-            if tilt_axis.length() < 0.001 && dot < 0.0 {
-                tilt_axis = transform.forward().into();
-            }
-            let angle = dot.clamp(-1.0, 1.0).acos();
-            righting_torque += tilt_axis.normalize_or_zero() * angle * 400.0;
-            
-            let downforce = (current_fwd_vel.abs() * 3.0).clamp(0.0, 200.0);
-            force.force += -normal * downforce;
-        } else {
-            force.force += -Vec3::Y * 400.0;
-            let mut tilt_axis = up.cross(Vec3::Y);
-            let dot = up.dot(Vec3::Y);
-            if tilt_axis.length() < 0.001 && dot < 0.0 {
-                tilt_axis = transform.forward().into();
-            }
-            let angle = dot.clamp(-1.0, 1.0).acos();
-            righting_torque += tilt_axis.normalize_or_zero() * angle * 200.0;
-        }
-
-        force.torque = turn_torque + righting_torque;
+        // Smoothly follow and align to the analytic terrain (no ground collider).
+        crate::vehicle::apply_terrain_follow(transform, &mut velocity, &mut force);
     }
 }
