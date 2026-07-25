@@ -12,6 +12,7 @@ impl Plugin for UiPlugin {
            .add_systems(Update, (
                menu_interaction,
                difficulty_interaction,
+               ai_skill_interaction,
                sensitivity_interaction,
                speed_interaction,
                accel_interaction,
@@ -37,6 +38,12 @@ enum DifficultyBtn { Decrease, Increase }
 
 #[derive(Component)]
 struct DifficultyText;
+
+#[derive(Component)]
+enum AiSkillBtn { Decrease, Increase }
+
+#[derive(Component)]
+struct AiSkillText;
 
 #[derive(Component)]
 enum SensitivityBtn { Decrease, Increase }
@@ -128,6 +135,14 @@ fn setup_main_menu(mut commands: Commands, difficulty: Res<GameDifficulty>) {
                 row.spawn((Button, btn_node.clone(), btn_color, DifficultyBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
                 row.spawn((Text::new(format!("{:.1}", difficulty.ai_aggressiveness)), text_font.clone(), text_color, val_node.clone(), DifficultyText));
                 row.spawn((Button, btn_node.clone(), btn_color, DifficultyBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
+            });
+
+            // AI Difficulty (skill) row
+            settings.spawn(row_node.clone()).with_children(|row| {
+                row.spawn((Text::new("AI Difficulty"), text_font.clone(), text_color, label_node.clone()));
+                row.spawn((Button, btn_node.clone(), btn_color, AiSkillBtn::Decrease)).with_child((Text::new("-"), text_font.clone(), text_color));
+                row.spawn((Text::new(format!("{:.2}", difficulty.ai_skill)), text_font.clone(), text_color, val_node.clone(), AiSkillText));
+                row.spawn((Button, btn_node.clone(), btn_color, AiSkillBtn::Increase)).with_child((Text::new("+"), text_font.clone(), text_color));
             });
 
             // Sensitivity row
@@ -224,6 +239,20 @@ fn difficulty_interaction(
     }
 }
 
+fn ai_skill_interaction(
+    interaction_query: Query<(&Interaction, &AiSkillBtn), Changed<Interaction>>,
+    mut difficulty: ResMut<GameDifficulty>,
+) {
+    for (interaction, btn) in &interaction_query {
+        if *interaction == Interaction::Pressed {
+            match btn {
+                AiSkillBtn::Decrease => difficulty.ai_skill = (difficulty.ai_skill - 0.1).max(0.5),
+                AiSkillBtn::Increase => difficulty.ai_skill = (difficulty.ai_skill + 0.1).min(2.0),
+            }
+        }
+    }
+}
+
 fn sensitivity_interaction(
     interaction_query: Query<(&Interaction, &SensitivityBtn), Changed<Interaction>>,
     mut difficulty: ResMut<GameDifficulty>,
@@ -296,16 +325,20 @@ fn fov_interaction(
 
 fn update_settings_text(
     difficulty: Res<GameDifficulty>,
-    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
-    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
-    mut speed_text: Query<&mut Text, (With<SpeedText>, Without<DifficultyText>, Without<SensitivityText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
-    mut accel_text: Query<&mut Text, (With<AccelText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<LapsText>, Without<FovText>)>,
-    mut laps_text: Query<&mut Text, (With<LapsText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<FovText>)>,
-    mut fov_text: Query<&mut Text, (With<FovText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>)>,
+    mut diff_text: Query<&mut Text, (With<DifficultyText>, Without<AiSkillText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
+    mut ai_skill_text: Query<&mut Text, (With<AiSkillText>, Without<DifficultyText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
+    mut sens_text: Query<&mut Text, (With<SensitivityText>, Without<DifficultyText>, Without<AiSkillText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
+    mut speed_text: Query<&mut Text, (With<SpeedText>, Without<DifficultyText>, Without<AiSkillText>, Without<SensitivityText>, Without<AccelText>, Without<LapsText>, Without<FovText>)>,
+    mut accel_text: Query<&mut Text, (With<AccelText>, Without<DifficultyText>, Without<AiSkillText>, Without<SensitivityText>, Without<SpeedText>, Without<LapsText>, Without<FovText>)>,
+    mut laps_text: Query<&mut Text, (With<LapsText>, Without<DifficultyText>, Without<AiSkillText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<FovText>)>,
+    mut fov_text: Query<&mut Text, (With<FovText>, Without<DifficultyText>, Without<AiSkillText>, Without<SensitivityText>, Without<SpeedText>, Without<AccelText>, Without<LapsText>)>,
 ) {
     if difficulty.is_changed() {
         for mut text in &mut diff_text {
             text.0 = format!("{:.1}", difficulty.ai_aggressiveness);
+        }
+        for mut text in &mut ai_skill_text {
+            text.0 = format!("{:.2}", difficulty.ai_skill);
         }
         for mut text in &mut sens_text {
             text.0 = format!("{:.1}", difficulty.steering_sensitivity);

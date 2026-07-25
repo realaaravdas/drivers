@@ -41,14 +41,15 @@ fn spawn_ai_cars(
         let surface_y = crate::level_gen::get_terrain_height(x, z);
         spawn_pos.y = surface_y + 5.0;
         
-        // 4 better, 4 same, 4 worse
-        let spec_mod = if i <= 4 {
+        // 4 better, 4 same, 4 worse — then scaled by the AI difficulty setting.
+        let tier = if i <= 4 {
             1.1
         } else if i <= 8 {
             1.0
         } else {
             0.9
         };
+        let spec_mod = tier * difficulty.ai_skill;
 
         let tail_mat = materials.add(StandardMaterial {
             base_color: Color::srgb(0.3, 0.0, 0.0),
@@ -256,6 +257,6 @@ fn ai_update(
         velocity.angular.y = target_yaw * (1.0 + crate::vehicle::CAR_ANGULAR_DAMPING * dt);
 
         // Smoothly follow and align to the analytic terrain (no ground collider).
-        crate::vehicle::apply_terrain_follow(transform, &mut velocity, &mut force);
+        crate::vehicle::apply_terrain_follow(transform, &mut velocity, &mut force, dt);
     }
 }

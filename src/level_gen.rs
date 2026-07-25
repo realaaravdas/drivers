@@ -1,5 +1,7 @@
 use bevy::prelude::*;
-use bevy::mesh::Indices;
+use bevy::mesh::{Indices, VertexAttributeValues};
+use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use rand::RngExt;
 use bevy_rapier3d::prelude::*;
 use crate::game_state::{GameState, RaceEntity};
@@ -32,24 +34,62 @@ pub fn get_terrain_height(x: f32, z: f32) -> f32 {
     let s = x + z;
     let d = x - z;
 
-    // Large hills — SF-scale rolling terrain (~600 unit period, up to ±22 m amplitude)
-    let large = (s / 580.0).sin() * 22.0
-              + (d / 630.0).cos() * 20.0;
+    // Large hills — bigger, more dramatic rolling terrain
+    let large = (s / 580.0).sin() * 38.0
+              + (d / 630.0).cos() * 34.0;
     // Medium hills — neighbourhood scale
-    let medium = (s / 195.0).sin() * 9.0
-               + (d / 175.0).cos() * 8.0
-               + (s / 115.0).cos() * 4.0;
+    let medium = (s / 195.0).sin() * 15.0
+               + (d / 175.0).cos() * 13.0
+               + (s / 115.0).cos() * 6.0;
     // Fine surface texture
-    let small = (d / 78.0).cos() * 2.5 + (s / 88.0).sin() * 2.0;
+    let small = (d / 78.0).cos() * 3.5 + (s / 88.0).sin() * 3.0;
 
-    // +22 baseline keeps most terrain positive; .max(0) creates flat valleys
-    (large + medium + small + 22.0).max(0.0)
+    // Baseline keeps most terrain positive; .max(0) creates flat valleys
+    (large + medium + small + 38.0).max(0.0)
+}
+
+/// A small repeating texture of office windows (lit/unlit) so buildings read as
+/// detailed skyscrapers instead of flat blocks — at zero extra entity cost.
+fn create_window_texture() -> Image {
+    let size = 32u32;
+    let cell = 4u32; // 4px per window
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let cx = x / cell;
+            let cy = y / cell;
+            let frame = (x % cell == 0) || (y % cell == 0); // mullions between windows
+            let lit = ((cx.wrapping_mul(73) ^ cy.wrapping_mul(151)) % 5) < 2; // ~40% lit
+            let (r, g, b) = if frame {
+                (26u8, 28, 34)
+            } else if lit {
+                (255u8, 232, 158)
+            } else {
+                (70u8, 92, 122)
+            };
+            data.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    let mut image = Image::new(
+        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        ..default()
+    });
+    image
 }
 
 fn generate_level(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut state: ResMut<NextState<GameState>>,
     mut level_data: ResMut<LevelData>,
 ) {
@@ -181,7 +221,32 @@ fn generate_level(
         RaceEntity,
     ));
 
-    // 3. Generate Buildings
+    // 3. Generate Buildings — windowed skyscrapers. A shared window texture (with
+    // a few colour tints) is UV-tiled per building, so they look detailed without
+    // any extra entities.
+    let window_tex = images.add(create_window_texture());
+    let tints = [
+        Color::srgb(0.72, 0.74, 0.80),
+        Color::srgb(0.55, 0.60, 0.72),
+        Color::srgb(0.80, 0.74, 0.64),
+        Color::srgb(0.62, 0.68, 0.62),
+        Color::srgb(0.70, 0.66, 0.70),
+    ];
+    let building_mats: Vec<Handle<StandardMaterial>> = tints
+        .iter()
+        .map(|c| {
+            materials.add(StandardMaterial {
+                base_color: *c,
+                base_color_texture: Some(window_tex.clone()),
+                emissive_texture: Some(window_tex.clone()),
+                emissive: LinearRgba::rgb(0.45, 0.45, 0.4), // makes the lit windows glow
+                perceptual_roughness: 0.8,
+                ..default()
+            })
+        })
+        .collect();
+
+    let footprint = BLOCK_SIZE - ROAD_WIDTH; // 24 m
     let building_grid = 30; // 60x60 grid
     for x in -building_grid..=building_grid {
         for z in -building_grid..=building_grid {
@@ -189,13 +254,13 @@ fn generate_level(
             let pos_z = z as f32 * BLOCK_SIZE;
             let mut pos = Vec3::new(pos_x, 0.0, pos_z);
             pos.y = get_terrain_height(pos.x, pos.z);
-            
+
             let mut is_track = false;
             let num_wp = waypoints.len();
             for i in 0..num_wp {
                 let wp1 = waypoints[i];
                 let wp2 = waypoints[(i + 1) % num_wp];
-                
+
                 if distance_to_segment(Vec3::new(pos.x, 0.0, pos.z), Vec3::new(wp1.x, 0.0, wp1.z), Vec3::new(wp2.x, 0.0, wp2.z)) < BLOCK_SIZE * 0.8 {
                     is_track = true;
                     break;
@@ -203,51 +268,43 @@ fn generate_level(
             }
 
             if !is_track {
-                let height = rng.random_range(10.0..50.0);
-                let color = Color::srgb(rng.random_range(0.3..0.9), rng.random_range(0.3..0.9), rng.random_range(0.3..0.9));
-                
+                let height = rng.random_range(15.0..70.0);
+
+                // Tile the window texture: ~4 m per window across and per floor.
+                let mut bmesh: Mesh = Cuboid::new(footprint, height, footprint).into();
+                let sx = footprint / 4.0;
+                let sy = height / 4.0;
+                if let Some(VertexAttributeValues::Float32x2(uvs)) =
+                    bmesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+                {
+                    for uv in uvs.iter_mut() {
+                        uv[0] *= sx;
+                        uv[1] *= sy;
+                    }
+                }
+
+                let mat = building_mats[rng.random_range(0..building_mats.len())].clone();
+
                 commands.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(BLOCK_SIZE - ROAD_WIDTH, height, BLOCK_SIZE - ROAD_WIDTH))),
-                    MeshMaterial3d(materials.add(color)),
+                    Mesh3d(meshes.add(bmesh)),
+                    MeshMaterial3d(mat),
                     Transform::from_xyz(pos.x, pos.y + height / 2.0 - 5.0, pos.z),
-                    Collider::cuboid((BLOCK_SIZE - ROAD_WIDTH) / 2.0, height / 2.0, (BLOCK_SIZE - ROAD_WIDTH) / 2.0),
+                    Collider::cuboid(footprint / 2.0, height / 2.0, footprint / 2.0),
                     RaceEntity,
                 ));
             }
         }
     }
 
-    // 4. Spawn Ski Gates
-    let pole_mesh = meshes.add(Cylinder::new(0.5, 8.0));
+    // 4. Spawn gate markers. The gate "pillars" are two rising columns of coloured
+    // smoke (see vehicle::emit_gate_smoke) rather than solid poles, so the marker
+    // entity itself is just a transform tag.
     for (i, wp) in waypoints.iter().enumerate() {
-        let color = if i == 0 { Color::srgb(1.0, 1.0, 1.0) } else { Color::srgb(1.0, 0.0, 0.0) };
-        let mat = materials.add(color);
-        
-        let dir = if i < waypoints.len() - 1 {
-            (waypoints[i+1] - *wp).normalize_or_zero()
-        } else {
-            (waypoints[0] - *wp).normalize_or_zero()
-        };
-        let right = Vec3::Y.cross(dir).normalize_or_zero();
-        
         commands.spawn((
             Transform::from_translation(*wp),
-            GlobalTransform::default(),
-            Visibility::default(),
             crate::game_state::WaypointMarker(i),
             RaceEntity,
-        )).with_children(|parent| {
-            parent.spawn((
-                Mesh3d(pole_mesh.clone()),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_translation(right * 10.0 + Vec3::Y * 4.0),
-            ));
-            parent.spawn((
-                Mesh3d(pole_mesh.clone()),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_translation(-right * 10.0 + Vec3::Y * 4.0),
-            ));
-        });
+        ));
     }
 
     state.set(GameState::Racing);
@@ -266,17 +323,18 @@ fn build_road_mesh(waypoints: &[Vec3]) -> Mesh {
 
     // (lateral offset from centre, colour, is_centre_line). Boundaries are
     // duplicated (same offset, different colour) so each band is a solid colour.
+    // Half-width 12 → a wide 24 m road.
     let cross: [(f32, [f32; 3], bool); 10] = [
-        (-8.0, white, false),
-        (-6.8, white, false),
-        (-6.8, asphalt, false),
-        (-0.9, asphalt, false),
-        (-0.9, yellow, true),
-        (0.9, yellow, true),
-        (0.9, asphalt, false),
-        (6.8, asphalt, false),
-        (6.8, white, false),
-        (8.0, white, false),
+        (-12.0, white, false),
+        (-10.5, white, false),
+        (-10.5, asphalt, false),
+        (-1.2, asphalt, false),
+        (-1.2, yellow, true),
+        (1.2, yellow, true),
+        (1.2, asphalt, false),
+        (10.5, asphalt, false),
+        (10.5, white, false),
+        (12.0, white, false),
     ];
 
     // Sample stations along the loop (~every 6 m so the ribbon drapes over hills).
@@ -313,7 +371,7 @@ fn build_road_mesh(waypoints: &[Vec3]) -> Mesh {
         let dash_on = dash_flags[si];
         for (offset, base_color, is_centre) in cross.iter() {
             let p = *centre + *right * *offset;
-            let y = get_terrain_height(p.x, p.z) + 0.2;
+            let y = get_terrain_height(p.x, p.z) + 0.3;
             positions.push([p.x, y, p.z]);
             normals.push([0.0, 1.0, 0.0]);
             uvs.push([0.0, 0.0]);

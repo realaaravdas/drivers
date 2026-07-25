@@ -15,6 +15,7 @@ pub enum GameState {
 #[derive(Resource)]
 pub struct GameDifficulty {
     pub ai_aggressiveness: f32,
+    pub ai_skill: f32, // scales AI top speed & acceleration (their raw pace / difficulty)
     pub steering_sensitivity: f32,
     pub top_speed: f32,
     pub acceleration: f32,
@@ -26,6 +27,7 @@ impl Default for GameDifficulty {
     fn default() -> Self {
         Self {
             ai_aggressiveness: 1.0,
+            ai_skill: 1.0,
             steering_sensitivity: 3.0,
             top_speed: 120.0,
             acceleration: 500.0,
@@ -33,6 +35,19 @@ impl Default for GameDifficulty {
             fov: 75.0, // a touch wider than Bevy's 45° default — zoomed out for a better view
         }
     }
+}
+
+/// Final standings captured the moment the race ends, so the scoreboard can show
+/// them even after the race entities (and their `LapTracker`s) are despawned.
+#[derive(Resource, Default)]
+pub struct RaceResults {
+    pub rows: Vec<RaceResultRow>,
+}
+
+pub struct RaceResultRow {
+    pub is_player: bool,
+    pub finished_time: Option<f32>,
+    pub current_lap: u32,
 }
 
 #[derive(Component)]
