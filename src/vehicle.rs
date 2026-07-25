@@ -1,23 +1,30 @@
-use bevy::prelude::*;
+use crate::game_state::{GameDifficulty, GameState, RaceEntity};
+use crate::level_gen::LevelData;
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
+use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use rand::RngExt;
-use crate::game_state::{GameState, RaceEntity, GameDifficulty};
-use crate::level_gen::LevelData;
 
 pub struct VehiclePlugin;
 
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::Racing), (spawn_player_car, init_gate_materials, init_tire_assets))
-           .add_systems(Update, (
-               vehicle_update,
-               spawn_exhaust_smoke,
-               update_smoke_particles,
-               tire_effects,
-               update_skid_marks,
-               update_gate_colors,
-           ).run_if(in_state(GameState::Racing)));
+        app.add_systems(
+            OnEnter(GameState::Racing),
+            (spawn_player_car, init_gate_materials, init_tire_assets),
+        )
+        .add_systems(
+            Update,
+            (
+                vehicle_update,
+                spawn_exhaust_smoke,
+                update_smoke_particles,
+                tire_effects,
+                update_skid_marks,
+                update_gate_colors,
+            )
+                .run_if(in_state(GameState::Racing)),
+        );
     }
 }
 
@@ -29,13 +36,10 @@ struct GateMaterials {
     yellow: Handle<StandardMaterial>,
 }
 
-fn init_gate_materials(
-    mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+fn init_gate_materials(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
     commands.insert_resource(GateMaterials {
-        red:    materials.add(Color::srgb(1.0, 0.0, 0.0)),
-        green:  materials.add(Color::srgb(0.0, 0.9, 0.1)),
+        red: materials.add(Color::srgb(1.0, 0.0, 0.0)),
+        green: materials.add(Color::srgb(0.0, 0.9, 0.1)),
         orange: materials.add(Color::srgb(1.0, 0.45, 0.0)),
         yellow: materials.add(Color::srgb(1.0, 1.0, 0.0)),
     });
@@ -153,10 +157,15 @@ pub fn build_car_visuals(
         let mut w = parent.spawn((
             Mesh3d(wheel_mesh.clone()),
             MeshMaterial3d(wheel_mat.clone()),
-            Transform::from_xyz(x, -0.1, z).with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            Transform::from_xyz(x, -0.1, z)
+                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
         ));
-        if front && left { w.insert(WheelFrontLeft); }
-        if front && !left { w.insert(WheelFrontRight); }
+        if front && left {
+            w.insert(WheelFrontLeft);
+        }
+        if front && !left {
+            w.insert(WheelFrontRight);
+        }
     }
 
     // Cabin / roof (body colour).
@@ -206,7 +215,8 @@ pub fn build_car_visuals(
     parent.spawn((
         Mesh3d(meshes.add(Cylinder::new(0.1, 0.4))),
         MeshMaterial3d(trim_mat),
-        Transform::from_xyz(0.6, -0.2, 2.0).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        Transform::from_xyz(0.6, -0.2, 2.0)
+            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
         ExhaustPort,
     ));
 }
@@ -226,7 +236,8 @@ fn tire_effects(
         let lat_vel = velocity.linear.dot(right);
 
         let sliding = lat_vel.abs() > 6.0;
-        let launching = vehicle.throttle > 0.5 && fwd_vel.abs() < 14.0 && velocity.linear.length() > 1.5;
+        let launching =
+            vehicle.throttle > 0.5 && fwd_vel.abs() < 14.0 && velocity.linear.length() > 1.5;
         let hard_brake = vehicle.braking && fwd_vel.abs() > 6.0;
         if !(vehicle.drifting || sliding || launching || hard_brake) {
             continue;
@@ -244,7 +255,9 @@ fn tire_effects(
                     Mesh3d(assets.skid_mesh.clone()),
                     MeshMaterial3d(assets.skid_mat.clone()),
                     Transform::from_xyz(wp.x, gy, wp.z).with_rotation(Quat::from_rotation_y(yaw)),
-                    SkidMark { life: Timer::from_seconds(12.0, TimerMode::Once) },
+                    SkidMark {
+                        life: Timer::from_seconds(12.0, TimerMode::Once),
+                    },
                     RaceEntity,
                 ));
             }
@@ -287,9 +300,9 @@ fn update_skid_marks(
 // --- Analytic terrain suspension -------------------------------------------
 // The terrain has no physics collider (see level_gen); cars float on this smooth
 // analytic suspension so slopes are stutter free.
-const RIDE_HEIGHT: f32 = 0.6;    // chassis-center height above the surface
-const GROUND_FOLLOW: f32 = 8.0;  // how firmly it corrects ride-height error (1/s)
-const AIR_MARGIN: f32 = 1.2;     // above this much clearance the car is "airborne"
+const RIDE_HEIGHT: f32 = 0.6; // chassis-center height above the surface
+const GROUND_FOLLOW: f32 = 8.0; // how firmly it corrects ride-height error (1/s)
+const AIR_MARGIN: f32 = 1.2; // above this much clearance the car is "airborne"
 const ALIGN_TORQUE: f32 = 400.0; // grounded slope-alignment spring
 const AIR_ALIGN_TORQUE: f32 = 200.0; // gentler upright spring while airborne
 
@@ -297,8 +310,8 @@ const AIR_ALIGN_TORQUE: f32 = 200.0; // gentler upright spring while airborne
 /// Angular damping on the car body — kept in sync with the `Damping` component so
 /// we can cancel it when driving the yaw rate directly (see `steering_yaw_rate`).
 pub const CAR_ANGULAR_DAMPING: f32 = 20.0;
-const WHEELBASE: f32 = 3.0;       // front-to-rear axle distance
-const MAX_LAT_ACCEL: f32 = 26.0;  // grip-limited lateral acceleration (the understeer cap)
+const WHEELBASE: f32 = 3.0; // front-to-rear axle distance
+const MAX_LAT_ACCEL: f32 = 36.0; // grip-limited lateral acceleration (the understeer cap)
 
 /// Target yaw rate (rad/s about world up) for a car, from a speed-sensitive
 /// bicycle model. Turning is realistic and self-limiting at speed:
@@ -309,10 +322,15 @@ const MAX_LAT_ACCEL: f32 = 26.0;  // grip-limited lateral acceleration (the unde
 /// * Speed-sensitive steering — usable lock also shrinks with speed on top of that.
 ///
 /// `fwd_speed` is signed: negative (reversing) flips the turn direction.
-pub fn steering_yaw_rate(fwd_speed: f32, steering_angle: f32, max_speed: f32, drifting: bool) -> f32 {
+pub fn steering_yaw_rate(
+    fwd_speed: f32,
+    steering_angle: f32,
+    max_speed: f32,
+    drifting: bool,
+) -> f32 {
     let speed = fwd_speed.abs();
     let speed_ratio = (speed / max_speed.max(1.0)).clamp(0.0, 1.0);
-    let authority = 1.0 - 0.55 * speed_ratio;          // full lock when slow → 45% at top speed
+    let authority = 1.0 - 0.55 * speed_ratio; // full lock when slow → 45% at top speed
     let angle = steering_angle * authority;
     let yaw = fwd_speed * angle.tan() / WHEELBASE;
     let cap = if speed > 1.0 {
@@ -345,9 +363,11 @@ pub fn apply_terrain_follow(
         // car follows the visible slope, not fine local texture.
         const E: f32 = 4.0;
         let dhdx = (crate::level_gen::get_terrain_height(pos.x + E, pos.z)
-            - crate::level_gen::get_terrain_height(pos.x - E, pos.z)) / (2.0 * E);
+            - crate::level_gen::get_terrain_height(pos.x - E, pos.z))
+            / (2.0 * E);
         let dhdz = (crate::level_gen::get_terrain_height(pos.x, pos.z + E)
-            - crate::level_gen::get_terrain_height(pos.x, pos.z - E)) / (2.0 * E);
+            - crate::level_gen::get_terrain_height(pos.x, pos.z - E))
+            / (2.0 * E);
 
         // Feed-forward how fast the ground rises under us, then correct any drift.
         let surface_vy = dhdx * velocity.linear.x + dhdz * velocity.linear.z;
@@ -376,56 +396,86 @@ fn spawn_player_car(
     let start_pos = level_data.start_pos;
 
     // Car chassis
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 4.0))),
-        MeshMaterial3d(materials.add(Color::srgb(0.9, 0.1, 0.1))),
-        Transform::from_translation(start_pos),
-        RigidBody::Dynamic,
-        Collider::round_cuboid(0.9, 0.4, 1.9, 0.1),
-        Velocity::default(),
-        ExternalForce::default(),
-        ExternalImpulse::default(),
-        ReadMassProperties::default(),
-        Ccd::enabled(),
-        Damping { linear_damping: 0.5, angular_damping: CAR_ANGULAR_DAMPING },
-        Vehicle {
-            speed: 0.0,
-            max_speed: difficulty.top_speed,
-            acceleration: difficulty.acceleration,
-            steering_angle: 0.0,
-            max_steering: 1.047, // 60 degrees in radians
-            is_player: true,
-            throttle: 0.0,
-            braking: false,
-            drifting: false,
-        },
-        Player,
-        crate::game_state::LapTracker {
-            current_lap: 1,
-            total_laps: difficulty.laps,
-            next_waypoint: 1, // 0 is start, so next is 1
-            race_start_time: 0.0,
-            current_lap_start_time: 0.0,
-            lap_times: Vec::new(),
-            finished_time: None,
-            place: 1,
-        },
-        (RaceEntity, TireMarks { last_mark: start_pos }),
-    )).with_children(|parent| {
-        build_car_visuals(parent, &mut meshes, &mut materials, Color::srgb(0.9, 0.1, 0.1));
-    });
+    commands
+        .spawn((
+            Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 4.0))),
+            MeshMaterial3d(materials.add(Color::srgb(0.9, 0.1, 0.1))),
+            Transform::from_translation(start_pos),
+            RigidBody::Dynamic,
+            Collider::round_cuboid(0.9, 0.4, 1.9, 0.1),
+            Velocity::default(),
+            ExternalForce::default(),
+            ExternalImpulse::default(),
+            ReadMassProperties::default(),
+            Ccd::enabled(),
+            Damping {
+                linear_damping: 0.5,
+                angular_damping: CAR_ANGULAR_DAMPING,
+            },
+            Vehicle {
+                speed: 0.0,
+                max_speed: difficulty.top_speed,
+                acceleration: difficulty.acceleration,
+                steering_angle: 0.0,
+                max_steering: 1.047, // 60 degrees in radians
+                is_player: true,
+                throttle: 0.0,
+                braking: false,
+                drifting: false,
+            },
+            Player,
+            crate::game_state::LapTracker {
+                current_lap: 1,
+                total_laps: difficulty.laps,
+                next_waypoint: 1, // 0 is start, so next is 1
+                race_start_time: 0.0,
+                current_lap_start_time: 0.0,
+                lap_times: Vec::new(),
+                finished_time: None,
+                place: 1,
+            },
+            (
+                RaceEntity,
+                TireMarks {
+                    last_mark: start_pos,
+                },
+            ),
+        ))
+        .with_children(|parent| {
+            build_car_visuals(
+                parent,
+                &mut meshes,
+                &mut materials,
+                Color::srgb(0.9, 0.1, 0.1),
+            );
+        });
 }
 
 fn vehicle_update(
     time: Res<Time>,
     difficulty: Res<GameDifficulty>,
-    mut query: Query<(&mut Vehicle, &mut ExternalForce, &Transform, &mut Velocity, Option<&Children>, Option<&mut crate::game_state::LapTracker>)>,
-    mut wheel_query: Query<(&mut Transform, Option<&WheelFrontLeft>, Option<&WheelFrontRight>), Without<Vehicle>>,
+    mut query: Query<(
+        &mut Vehicle,
+        &mut ExternalForce,
+        &Transform,
+        &mut Velocity,
+        Option<&Children>,
+        Option<&mut crate::game_state::LapTracker>,
+    )>,
+    mut wheel_query: Query<
+        (
+            &mut Transform,
+            Option<&WheelFrontLeft>,
+            Option<&WheelFrontRight>,
+        ),
+        Without<Vehicle>,
+    >,
     level_data: Res<crate::level_gen::LevelData>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
     let dt = time.delta_secs();
-    for (mut vehicle, mut force, transform, mut velocity, children, lap_tracker) in query.iter_mut() {
+    for (mut vehicle, mut force, transform, mut velocity, children, lap_tracker) in query.iter_mut()
+    {
         if vehicle.is_player {
             let mut throttle = 0.0;
             let mut target_steering = 0.0;
@@ -458,11 +508,15 @@ fn vehicle_update(
 
             let steering_speed = difficulty.steering_sensitivity; // How fast the wheel turns
             let return_speed = difficulty.steering_sensitivity * 1.5; // How fast it returns to center
-            
-            let step = if target_steering == 0.0 { return_speed * dt } else { steering_speed * dt };
+
+            let step = if target_steering == 0.0 {
+                return_speed * dt
+            } else {
+                steering_speed * dt
+            };
             let target_angle = target_steering * vehicle.max_steering;
             let diff = target_angle - vehicle.steering_angle;
-            
+
             if diff.abs() <= step {
                 vehicle.steering_angle = target_angle;
             } else {
@@ -475,7 +529,8 @@ fn vehicle_update(
                     let child_entity = child;
                     if let Ok((mut w_transform, fl, fr)) = wheel_query.get_mut(child_entity) {
                         if fl.is_some() || fr.is_some() {
-                            w_transform.rotation = Quat::from_rotation_y(vehicle.steering_angle) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                            w_transform.rotation = Quat::from_rotation_y(vehicle.steering_angle)
+                                * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
                         }
                     }
                 }
@@ -483,13 +538,13 @@ fn vehicle_update(
 
             let forward: Vec3 = transform.forward().into();
             let right: Vec3 = transform.right().into();
-            
+
             let current_fwd_vel = velocity.linear.dot(forward);
             let current_lat_vel = velocity.linear.dot(right);
 
             // Engine force (inertia build up through lower acceleration)
             let mut engine_force = forward * throttle * vehicle.acceleration;
-            
+
             // Braking
             if braking {
                 let brake_force = -forward * current_fwd_vel * 5.0; // Strong stop
@@ -511,7 +566,12 @@ fn vehicle_update(
 
             // Realistic, speed-limited turning: drive the yaw rate directly, cancelling
             // the body's angular damping so it lands on target this step.
-            let target_yaw = steering_yaw_rate(current_fwd_vel, vehicle.steering_angle, vehicle.max_speed, drifting);
+            let target_yaw = steering_yaw_rate(
+                current_fwd_vel,
+                vehicle.steering_angle,
+                vehicle.max_speed,
+                drifting,
+            );
             velocity.angular.y = target_yaw * (1.0 + CAR_ANGULAR_DAMPING * dt);
 
             // Smoothly follow and align to the analytic terrain (no ground collider).
@@ -522,7 +582,7 @@ fn vehicle_update(
                 if !level_data.waypoints.is_empty() {
                     let target_wp = level_data.waypoints[tracker.next_waypoint];
                     let dist = transform.translation.distance(target_wp);
-                    
+
                     if dist < 40.0 {
                         // Change color to yellow when approaching
                         // (Gate logic will be in a separate system or we query children here)
@@ -548,20 +608,20 @@ fn spawn_exhaust_smoke(
     query: Query<&GlobalTransform, With<ExhaustPort>>,
 ) {
     let mut rng = rand::rng();
-    
+
     for global_transform in query.iter() {
         let chance = 0.2; // 20% chance per frame to spawn smoke
-        
+
         if rand::random::<f32>() < chance {
             let pos = global_transform.translation();
             let back = global_transform.up(); // Because cylinder is rotated X 90 deg, up is Z
-            
+
             let scatter = Vec3::new(
                 rng.random_range(-0.1..0.1),
                 rng.random_range(0.0..0.2),
                 rng.random_range(-0.1..0.1),
             );
-            
+
             let vel = back * rng.random_range(2.0..5.0) + scatter + Vec3::Y * 2.0;
 
             commands.spawn((
@@ -586,7 +646,7 @@ fn update_smoke_particles(
     let dt = time.delta_secs();
     for (entity, mut transform, mut particle) in query.iter_mut() {
         particle.timer.tick(time.delta());
-        
+
         if particle.timer.elapsed() >= particle.timer.duration() {
             commands.entity(entity).despawn();
         } else {
@@ -605,8 +665,12 @@ fn update_gate_colors(
     mut mesh_materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
     level_data: Res<crate::level_gen::LevelData>,
 ) {
-    let Some((player_transform, tracker)) = player_query.iter().next() else { return; };
-    if level_data.waypoints.is_empty() { return; }
+    let Some((player_transform, tracker)) = player_query.iter().next() else {
+        return;
+    };
+    if level_data.waypoints.is_empty() {
+        return;
+    }
 
     let next_wp = tracker.next_waypoint;
 
@@ -620,8 +684,14 @@ fn update_gate_colors(
         // When next_wp wraps back to 0/1 at lap start, all higher-index gates
         // automatically revert to red without any special-case logic.
         let mat_handle = if idx == next_wp {
-            let dist = player_transform.translation.distance(level_data.waypoints[idx]);
-            if dist <= 40.0 { &gate_mats.yellow } else { &gate_mats.orange }
+            let dist = player_transform
+                .translation
+                .distance(level_data.waypoints[idx]);
+            if dist <= 40.0 {
+                &gate_mats.yellow
+            } else {
+                &gate_mats.orange
+            }
         } else if idx < next_wp {
             &gate_mats.green
         } else {
