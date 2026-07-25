@@ -49,7 +49,13 @@ fn spawn_ai_cars(
         } else {
             0.9
         };
-        
+
+        let tail_mat = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.3, 0.0, 0.0),
+            emissive: Color::srgb(0.5, 0.0, 0.0).to_linear(),
+            ..default()
+        });
+
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 4.0))),
             MeshMaterial3d(materials.add(Color::srgb(0.2, 0.8, 0.2))),
@@ -88,9 +94,13 @@ fn spawn_ai_cars(
                 finished_time: None,
                 place: 1,
             },
-            (RaceEntity, crate::vehicle::TireMarks { last_mark: spawn_pos }),
+            (
+                RaceEntity,
+                crate::vehicle::TireMarks { last_mark: spawn_pos },
+                crate::vehicle::CarLights { tail_mat: tail_mat.clone() },
+            ),
         )).with_children(|parent| {
-            crate::vehicle::build_car_visuals(parent, &mut meshes, &mut materials, Color::srgb(0.2, 0.8, 0.2));
+            crate::vehicle::build_car_visuals(parent, &mut meshes, &mut materials, Color::srgb(0.2, 0.8, 0.2), tail_mat.clone());
         });
     }
 }
@@ -191,10 +201,24 @@ fn ai_update(
             ai.stuck_time = 0.0;
         }
 
+        // Corner craft: brake for tight/fast corners, and lay into a handbrake
+        // drift on hairpins. `forward_dot` is high on straights, low into a turn.
+        let speed = velocity.linear.length();
+        let mut braking = forward_dot < 0.35 && speed > 22.0;
+        let mut drifting = forward_dot < 0.1 && speed > 16.0;
+
         if ai.reversing_time > 0.0 {
             ai.reversing_time -= dt;
             throttle = -1.0;
             target_steering = -target_steering; // Turn opposite way to back out
+            braking = false;
+            drifting = false;
+        }
+
+        vehicle.braking = braking;
+        vehicle.drifting = drifting;
+        if braking {
+            throttle = 0.0;
         }
 
         // Smooth steering
@@ -215,17 +239,20 @@ fn ai_update(
         let current_fwd_vel = velocity.linear.dot(forward);
         let current_lat_vel = velocity.linear.dot(right);
 
-        let engine_force = forward * throttle * vehicle.acceleration;
-        
+        let mut engine_force = forward * throttle * vehicle.acceleration;
+        if vehicle.braking {
+            engine_force += -forward * current_fwd_vel * 13.0; // strong brakes, same as player
+        }
+
         let drag_force = -forward * current_fwd_vel * 1.0;
-        let grip_factor = 39.0;
+        let grip_factor = if vehicle.drifting { 6.0 } else { 39.0 };
         let grip_force = -right * current_lat_vel * grip_factor;
 
         force.force = engine_force + drag_force + grip_force;
         force.torque = Vec3::ZERO;
 
         // Realistic, speed-limited turning (same model as the player).
-        let target_yaw = crate::vehicle::steering_yaw_rate(current_fwd_vel, vehicle.steering_angle, vehicle.max_speed, false);
+        let target_yaw = crate::vehicle::steering_yaw_rate(current_fwd_vel, vehicle.steering_angle, vehicle.max_speed, vehicle.drifting);
         velocity.angular.y = target_yaw * (1.0 + crate::vehicle::CAR_ANGULAR_DAMPING * dt);
 
         // Smoothly follow and align to the analytic terrain (no ground collider).

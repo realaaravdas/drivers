@@ -14,6 +14,10 @@ impl Plugin for VehiclePlugin {
             (spawn_player_car, init_gate_materials, init_tire_assets),
         )
         .add_systems(
+            OnEnter(GameState::Racing),
+            init_gate_smoke_assets.after(init_gate_materials),
+        )
+        .add_systems(
             Update,
             (
                 vehicle_update,
@@ -22,6 +26,8 @@ impl Plugin for VehiclePlugin {
                 tire_effects,
                 update_skid_marks,
                 update_gate_colors,
+                update_brake_lights,
+                emit_gate_smoke,
             )
                 .run_if(in_state(GameState::Racing)),
         );
@@ -43,6 +49,116 @@ fn init_gate_materials(mut commands: Commands, mut materials: ResMut<Assets<Stan
         orange: materials.add(Color::srgb(1.0, 0.45, 0.0)),
         yellow: materials.add(Color::srgb(1.0, 1.0, 0.0)),
     });
+}
+
+/// Translucent, coloured smoke materials for the gates — one per gate state.
+#[derive(Resource)]
+struct GateSmokeAssets {
+    mesh: Handle<Mesh>,
+    red: Handle<StandardMaterial>,
+    yellow: Handle<StandardMaterial>,
+    green: Handle<StandardMaterial>,
+}
+
+fn init_gate_smoke_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let smoke = |r: f32, g: f32, b: f32| StandardMaterial {
+        base_color: Color::srgba(r, g, b, 0.5),
+        emissive: Color::srgb(r * 0.6, g * 0.6, b * 0.6).to_linear(),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    };
+    commands.insert_resource(GateSmokeAssets {
+        mesh: meshes.add(Sphere::new(1.2).mesh().ico(1).unwrap()),
+        red: materials.add(smoke(1.0, 0.1, 0.1)),
+        yellow: materials.add(smoke(1.0, 1.0, 0.1)),
+        green: materials.add(smoke(0.1, 1.0, 0.2)),
+    });
+}
+
+/// Continuously emits rising, colour-coded smoke from each gate so the next
+/// gate to aim for glows and plumes in its status colour.
+fn emit_gate_smoke(
+    mut commands: Commands,
+    assets: Res<GateSmokeAssets>,
+    gate_query: Query<(&crate::game_state::WaypointMarker, &Transform)>,
+    player_query: Query<&crate::game_state::LapTracker, With<Player>>,
+    level_data: Res<crate::level_gen::LevelData>,
+) {
+    let Some(tracker) = player_query.iter().next() else {
+        return;
+    };
+    if level_data.waypoints.is_empty() {
+        return;
+    }
+    let next_wp = tracker.next_waypoint;
+    let num_wp = level_data.waypoints.len();
+    let mut rng = rand::rng();
+
+    for (marker, transform) in gate_query.iter() {
+        let idx = marker.0;
+        // Active gate glows yellow and plumes hard; passed gates green, upcoming red.
+        let (mat, chance) = if idx == next_wp {
+            (&assets.yellow, 0.9)
+        } else if idx < next_wp {
+            (&assets.green, 0.12)
+        } else {
+            (&assets.red, 0.12)
+        };
+
+        if rand::random::<f32>() < chance {
+            // Gate opening direction (perpendicular to the racing line) so smoke
+            // rises from along the gate, not just its centre.
+            let dir = (level_data.waypoints[(idx + 1) % num_wp] - level_data.waypoints[idx])
+                .normalize_or_zero();
+            let gate_right = Vec3::Y.cross(dir).normalize_or_zero();
+            let side = rng.random_range(-9.0..9.0);
+            let base = transform.translation + gate_right * side + Vec3::Y * 1.0;
+            let vel = Vec3::Y * rng.random_range(4.0..7.0)
+                + Vec3::new(
+                    rng.random_range(-0.6..0.6),
+                    0.0,
+                    rng.random_range(-0.6..0.6),
+                );
+            commands.spawn((
+                Mesh3d(assets.mesh.clone()),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_translation(base),
+                SmokeParticle {
+                    timer: Timer::from_seconds(rng.random_range(1.2..2.2), TimerMode::Once),
+                    velocity: vel,
+                },
+                RaceEntity,
+            ));
+        }
+    }
+}
+
+/// Handle to a car's shared tail-light material, so we can brighten it on braking.
+#[derive(Component)]
+pub struct CarLights {
+    pub tail_mat: Handle<StandardMaterial>,
+}
+
+/// Brake lights: taillights glow bright red while braking, dim otherwise.
+/// Works for the player and AI alike (both set `Vehicle::braking`).
+fn update_brake_lights(
+    query: Query<(&Vehicle, &CarLights)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (vehicle, lights) in query.iter() {
+        if let Some(mat) = materials.get_mut(&lights.tail_mat) {
+            mat.emissive = if vehicle.braking {
+                Color::srgb(4.0, 0.0, 0.0).to_linear()
+            } else {
+                Color::srgb(0.5, 0.0, 0.0).to_linear()
+            };
+        }
+    }
 }
 
 #[derive(Component)]
@@ -130,6 +246,7 @@ pub fn build_car_visuals(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     body_color: Color,
+    tail_mat: Handle<StandardMaterial>,
 ) {
     let wheel_mesh = meshes.add(Cylinder::new(0.4, 0.2));
     let wheel_mat = materials.add(StandardMaterial {
@@ -187,15 +304,11 @@ pub fn build_car_visuals(
         Transform::from_xyz(0.0, 0.72, 1.95),
     ));
 
-    // Head- and tail-lights (emissive so they glow).
+    // Headlights (emissive so they glow). Taillights use the shared `tail_mat`
+    // handle so `update_brake_lights` can brighten them on braking.
     let head_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 1.0, 0.9),
         emissive: Color::srgb(1.6, 1.6, 1.2).to_linear(),
-        ..default()
-    });
-    let tail_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.4, 0.0, 0.0),
-        emissive: Color::srgb(1.4, 0.0, 0.0).to_linear(),
         ..default()
     });
     for x in [-0.6_f32, 0.6] {
@@ -288,11 +401,18 @@ fn tire_effects(
 fn update_skid_marks(
     mut commands: Commands,
     time: Res<Time>,
-    mut query: Query<(Entity, &mut SkidMark)>,
+    mut query: Query<(Entity, &mut Transform, &mut SkidMark)>,
 ) {
-    for (entity, mut mark) in query.iter_mut() {
-        if mark.life.tick(time.delta()).is_finished() {
+    for (entity, mut transform, mut mark) in query.iter_mut() {
+        mark.life.tick(time.delta());
+        if mark.life.is_finished() {
             commands.entity(entity).despawn();
+        } else {
+            // Shrink away over the last third of the lifetime so marks fade out
+            // instead of popping.
+            let remaining = mark.life.fraction_remaining();
+            let fade = (remaining / 0.33).min(1.0);
+            transform.scale = Vec3::new(fade, 1.0, fade);
         }
     }
 }
@@ -330,11 +450,16 @@ pub fn steering_yaw_rate(
 ) -> f32 {
     let speed = fwd_speed.abs();
     let speed_ratio = (speed / max_speed.max(1.0)).clamp(0.0, 1.0);
-    let authority = 1.0 - 0.55 * speed_ratio; // full lock when slow → 45% at top speed
+    // Handbrake keeps more steering authority at speed so the rear steps out and
+    // the car rotates into a proper slide.
+    let authority_loss = if drifting { 0.25 } else { 0.55 };
+    let authority = 1.0 - authority_loss * speed_ratio;
     let angle = steering_angle * authority;
     let yaw = fwd_speed * angle.tan() / WHEELBASE;
+    // Drifting raises the lateral-accel cap a lot (grip is deliberately gone), so
+    // the car can swing much further before it's limited — that's the drift.
     let cap = if speed > 1.0 {
-        MAX_LAT_ACCEL * if drifting { 1.7 } else { 1.0 } / speed
+        MAX_LAT_ACCEL * if drifting { 2.6 } else { 1.0 } / speed
     } else {
         f32::MAX
     };
@@ -395,6 +520,13 @@ fn spawn_player_car(
 ) {
     let start_pos = level_data.start_pos;
 
+    // Shared tail-light material (brightened on braking by `update_brake_lights`).
+    let tail_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.3, 0.0, 0.0),
+        emissive: Color::srgb(0.5, 0.0, 0.0).to_linear(),
+        ..default()
+    });
+
     // Car chassis
     commands
         .spawn((
@@ -439,6 +571,9 @@ fn spawn_player_car(
                 TireMarks {
                     last_mark: start_pos,
                 },
+                CarLights {
+                    tail_mat: tail_mat.clone(),
+                },
             ),
         ))
         .with_children(|parent| {
@@ -447,6 +582,7 @@ fn spawn_player_car(
                 &mut meshes,
                 &mut materials,
                 Color::srgb(0.9, 0.1, 0.1),
+                tail_mat.clone(),
             );
         });
 }
@@ -545,19 +681,20 @@ fn vehicle_update(
             // Engine force (inertia build up through lower acceleration)
             let mut engine_force = forward * throttle * vehicle.acceleration;
 
-            // Braking
+            // Braking — strong, progressive stopping power (never drives in reverse
+            // since the force is proportional to, and opposes, forward velocity).
             if braking {
-                let brake_force = -forward * current_fwd_vel * 5.0; // Strong stop
+                let brake_force = -forward * current_fwd_vel * 13.0;
                 engine_force += brake_force;
             }
 
             // Drag
             let drag_force = -forward * current_fwd_vel * 1.0; // Reduced drag for more coasting/inertia
 
-            // Lateral friction (grip) - drifting reduces this!
+            // Lateral friction (grip) - the handbrake kills it so the car slides.
             let mut grip_factor = 39.0;
             if drifting {
-                grip_factor = 10.0; // Lose grip, slide!
+                grip_factor = 6.0; // Handbrake: rear breaks loose, big slide
             }
             let grip_force = -right * current_lat_vel * grip_factor;
 

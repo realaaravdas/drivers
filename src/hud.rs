@@ -1,9 +1,34 @@
 use bevy::prelude::*;
 use bevy_camera::Viewport;
 use bevy_camera::visibility::RenderLayers;
+use bevy_camera::{OrthographicProjection, ScalingMode};
 use crate::game_state::{GameState, LapTracker};
 use crate::vehicle::{Vehicle, Player};
 use crate::level_gen::LevelData;
+
+/// Cached minimap framing so marker sizes match the zoomed-out full-track view.
+#[derive(Resource)]
+struct MinimapView {
+    extent: f32,
+}
+
+/// Centre (XZ) and half-extent of the track, for framing the minimap.
+fn track_bounds(waypoints: &[Vec3]) -> (Vec3, f32) {
+    if waypoints.is_empty() {
+        return (Vec3::ZERO, 500.0);
+    }
+    let mut center = Vec3::ZERO;
+    for wp in waypoints {
+        center += Vec3::new(wp.x, 0.0, wp.z);
+    }
+    center /= waypoints.len() as f32;
+    let mut extent = 0.0_f32;
+    for wp in waypoints {
+        let d = Vec3::new(wp.x, 0.0, wp.z).distance(center);
+        extent = extent.max(d);
+    }
+    (center, extent * 1.15 + 30.0) // margin so the loop isn't flush to the edge
+}
 
 pub struct HudPlugin;
 
@@ -201,56 +226,64 @@ fn setup_hud(
         });
     });
 
-    // Minimap Camera (Orthographic, looking down)
-    // We use a viewport in the top-right corner
+    // Minimap: a fixed, top-down orthographic camera framing the WHOLE track
+    // (Forza style). It renders only the overlay layer (track ribbon + racer
+    // dots) on a dark background — cheap and clean, not the full 3D world.
+    let (center, extent) = track_bounds(&level_data.waypoints);
+    commands.insert_resource(MinimapView { extent });
+
     commands.spawn((
         Camera3d::default(),
         Camera {
             order: 1, // Render after main camera
             viewport: Some(Viewport {
-                physical_position: UVec2::new(width.saturating_sub(300), height.saturating_sub(300)), // Bottom right
-                physical_size: UVec2::new(280, 280),
+                physical_position: UVec2::new(width.saturating_sub(310), height.saturating_sub(310)),
+                physical_size: UVec2::new(290, 290),
                 ..default()
             }),
-            clear_color: ClearColorConfig::Custom(Color::srgb(0.05, 0.05, 0.05)),
+            clear_color: ClearColorConfig::Custom(Color::srgba(0.06, 0.07, 0.10, 0.85)),
             ..default()
         },
-        Projection::Perspective(PerspectiveProjection {
-            fov: std::f32::consts::PI / 4.0,
-            ..default()
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::Fixed {
+                width: 2.0 * extent,
+                height: 2.0 * extent,
+            },
+            near: 0.1,
+            far: 3000.0,
+            ..OrthographicProjection::default_3d()
         }),
-        Transform::from_xyz(0.0, 500.0, 0.0).looking_at(Vec3::ZERO, -Vec3::Z),
-        RenderLayers::from_layers(&[0, 1]), // See world AND minimap overlay
+        // Straight down over the track centre; -Z is "up" on the map.
+        Transform::from_xyz(center.x, 1200.0, center.z).looking_at(center, -Vec3::Z),
+        RenderLayers::layer(1), // Overlay only
         MinimapCamera,
         HudEntity,
     ));
 
-    // Minimap Track Outline
-    // Spawn simple path high up, only visible to Minimap Camera
+    // Track ribbon drawn onto the minimap overlay (layer 1), sized to read at the
+    // zoomed-out scale. Rounded at each waypoint so corners join cleanly.
     if !level_data.waypoints.is_empty() {
         let num_wp = level_data.waypoints.len();
-        
-        let track_mat = materials.add(Color::srgba(0.0, 1.0, 0.0, 0.5));
-        let corner_mesh = meshes.add(Cylinder::new(4.0, 1.0));
-        
+
+        let band = (extent * 0.022).max(14.0); // width of the track line
+        let track_mat = materials.add(Color::srgb(0.55, 0.58, 0.65));
+        let corner_mesh = meshes.add(Cylinder::new(band * 0.5, 1.0));
+
         for i in 0..num_wp {
             let wp1 = level_data.waypoints[i];
             let wp2 = level_data.waypoints[(i + 1) % num_wp];
-            
-            let center = (wp1 + wp2) / 2.0;
+
+            let seg_center = (wp1 + wp2) / 2.0;
             let dist = wp1.distance(wp2);
             let dir = (wp2 - wp1).normalize_or_zero();
-            
-            // Path segment
+
             commands.spawn((
-                Mesh3d(meshes.add(Cuboid::new(8.0, 1.0, dist))),
+                Mesh3d(meshes.add(Cuboid::new(band, 1.0, dist))),
                 MeshMaterial3d(track_mat.clone()),
-                Transform::from_translation(center + Vec3::Y * 400.0).looking_to(dir, Vec3::Y),
-                RenderLayers::layer(1), // Only Minimap sees this
+                Transform::from_translation(seg_center + Vec3::Y * 400.0).looking_to(dir, Vec3::Y),
+                RenderLayers::layer(1),
                 HudEntity,
             ));
-            
-            // Smooth corner
             commands.spawn((
                 Mesh3d(corner_mesh.clone()),
                 MeshMaterial3d(track_mat.clone()),
@@ -259,6 +292,15 @@ fn setup_hud(
                 HudEntity,
             ));
         }
+
+        // Start/finish marker on the minimap.
+        commands.spawn((
+            Mesh3d(meshes.add(Cylinder::new(band * 0.6, 1.0))),
+            MeshMaterial3d(materials.add(Color::srgb(1.0, 1.0, 1.0))),
+            Transform::from_translation(level_data.waypoints[0] + Vec3::Y * 401.0),
+            RenderLayers::layer(1),
+            HudEntity,
+        ));
     }
 }
 
@@ -266,66 +308,55 @@ fn add_minimap_markers(
     mut commands: Commands,
     query: Query<(Entity, &Vehicle)>,
     marker_query: Query<&MinimapMarker>,
+    view: Option<Res<MinimapView>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let Some(view) = view else { return };
+    // Dots sized to the zoomed-out view; the player is bigger and cyan so it pops.
+    let ai_r = (view.extent * 0.028).max(16.0);
+    let player_r = ai_r * 1.5;
+
     for (entity, vehicle) in query.iter() {
         let has_marker = marker_query.iter().any(|m| m.target == entity);
-
-        if !has_marker {
-            let color = if vehicle.is_player {
-                Color::srgb(1.0, 0.0, 0.0) // Red for player
-            } else {
-                Color::srgb(0.2, 0.2, 1.0) // Blue for AI
-            };
-
-            commands.spawn((
-                Mesh3d(meshes.add(Sphere::new(6.0))), // Large sphere to be visible on minimap
-                MeshMaterial3d(materials.add(color)),
-                Transform::from_translation(Vec3::Y * 50.0), // Start with a default height
-                RenderLayers::layer(1), // Minimap layer only
-                MinimapMarker { target: entity },
-                HudEntity,
-            ));
+        if has_marker {
+            continue;
         }
+
+        let (color, radius) = if vehicle.is_player {
+            (Color::srgb(0.0, 0.9, 1.0), player_r) // Cyan player
+        } else {
+            (Color::srgb(1.0, 0.25, 0.2), ai_r) // Red opponents
+        };
+
+        // Emissive + unlit so dots read clearly on the flat minimap.
+        let mat = materials.add(StandardMaterial {
+            base_color: color,
+            emissive: color.to_linear(),
+            unlit: true,
+            ..default()
+        });
+
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(radius))),
+            MeshMaterial3d(mat),
+            Transform::from_translation(Vec3::Y * 50.0),
+            RenderLayers::layer(1),
+            MinimapMarker { target: entity },
+            HudEntity,
+        ));
     }
 }
 
 fn update_minimap(
-    player_query: Query<&Transform, (With<Player>, Without<MinimapCamera>, Without<MinimapMarker>)>,
-    mut camera_query: Query<&mut Transform, With<MinimapCamera>>,
-    mut marker_query: Query<(&mut Transform, &MinimapMarker), (Without<Player>, Without<MinimapCamera>)>,
-    vehicle_query: Query<&Transform, (With<Vehicle>, Without<Player>, Without<MinimapCamera>, Without<MinimapMarker>)>,
+    vehicle_query: Query<&Transform, (With<Vehicle>, Without<MinimapMarker>)>,
+    mut marker_query: Query<(&mut Transform, &MinimapMarker), Without<Vehicle>>,
 ) {
-    // Update camera to follow player
-    if let Some(player_transform) = player_query.iter().next() {
-        if let Some(mut cam_transform) = camera_query.iter_mut().next() {
-            let fwd = player_transform.forward();
-            let up = Vec3::Y;
-            let target_pos = player_transform.translation;
-            let cam_pos = target_pos - fwd * 150.0 + up * 150.0;
-            
-            // Lerp camera for smooth tracking
-            cam_transform.translation = cam_transform.translation.lerp(cam_pos, 0.1);
-            
-            // Look slightly ahead of player
-            let look_target = target_pos + fwd * 50.0;
-            *cam_transform = cam_transform.looking_at(look_target, up);
-        }
-
-        // Update markers
-        for (mut marker_transform, marker) in marker_query.iter_mut() {
-            let mut target_pos = None;
-            if let Ok(p_transform) = player_query.get(marker.target) {
-                target_pos = Some(p_transform.translation);
-            } else if let Ok(v_transform) = vehicle_query.get(marker.target) {
-                target_pos = Some(v_transform.translation);
-            }
-
-            if let Some(pos) = target_pos {
-                // Keep marker floating above the target
-                marker_transform.translation = pos + Vec3::Y * 50.0;
-            }
+    // The minimap camera is fixed on the whole track; just move each racer's dot
+    // to its car's XZ. Y = 450 keeps dots drawn on top of the track ribbon (Y 400).
+    for (mut marker_transform, marker) in marker_query.iter_mut() {
+        if let Ok(t) = vehicle_query.get(marker.target) {
+            marker_transform.translation = Vec3::new(t.translation.x, 450.0, t.translation.z);
         }
     }
 }

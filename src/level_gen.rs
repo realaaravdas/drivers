@@ -97,59 +97,22 @@ fn generate_level(
     let mut uvs = Vec::with_capacity(num_rows * num_cols);
     let mut colors = Vec::with_capacity(num_rows * num_cols);
 
-    let mut segments = Vec::new();
-    let num_wp = waypoints.len();
-    for i in 0..num_wp {
-        let wp1 = waypoints[i];
-        let wp2 = waypoints[(i + 1) % num_wp];
-        let l2 = wp1.distance_squared(wp2);
-        let min_x = wp1.x.min(wp2.x) - 16.0;
-        let max_x = wp1.x.max(wp2.x) + 16.0;
-        let min_z = wp1.z.min(wp2.z) - 16.0;
-        let max_z = wp1.z.max(wp2.z) + 16.0;
-        segments.push((wp1, wp2, l2, min_x, max_x, min_z, max_z));
-    }
-
     for z in 0..num_cols {
         for x in 0..num_rows {
             let px = x as f32 * grid_size - half_size;
             let pz = z as f32 * grid_size - half_size;
             let h = get_terrain_height(px, pz);
-            
+
             heights.push(h);
             positions.push([px, h, pz]);
             normals.push([0.0, 1.0, 0.0]); // We'll compute real normals later
             uvs.push([x as f32 / num_rows as f32, z as f32 / num_cols as f32]);
-            
-            let pos = Vec3::new(px, 0.0, pz);
-            let mut min_dist = f32::MAX;
-            
-            for &(wp1, wp2, l2, min_x, max_x, min_z, max_z) in &segments {
-                if pos.x < min_x || pos.x > max_x || pos.z < min_z || pos.z > max_z {
-                    continue;
-                }
-                let t = ((pos.x - wp1.x) * (wp2.x - wp1.x) + (pos.z - wp1.z) * (wp2.z - wp1.z)) / l2;
-                let t = t.clamp(0.0, 1.0);
-                let proj = Vec3::new(wp1.x + t * (wp2.x - wp1.x), 0.0, wp1.z + t * (wp2.z - wp1.z));
-                let dist = pos.distance(proj);
-                if dist < min_dist {
-                    min_dist = dist;
-                }
-            }
 
-            // High-contrast road so it reads clearly against the terrain. Lines are
-            // kept wide (≥ one grid cell) so they render solidly at this 8 m vertex
-            // resolution instead of aliasing into dots:
-            //   bright yellow center · dark asphalt · white edge lines · green grass.
-            if min_dist < 4.0 { // Wide yellow center line
-                colors.push([1.0, 0.85, 0.0, 1.0]);
-            } else if min_dist < 12.5 { // Dark asphalt — strong contrast with lines and grass
-                colors.push([0.13, 0.13, 0.15, 1.0]);
-            } else if min_dist < 16.0 { // White edge lines mark the road boundary
-                colors.push([0.92, 0.92, 0.92, 1.0]);
-            } else { // Grass
-                colors.push([0.22, 0.47, 0.12, 1.0]);
-            }
+            // Grass everywhere — the road is a separate high-resolution ribbon mesh
+            // (see `build_road_mesh`) so its lines stay crisp regardless of this
+            // coarse 8 m terrain grid. A subtle tint breaks up the flatness.
+            let tint = 0.03 * ((px * 0.03).sin() * (pz * 0.037).cos());
+            colors.push([0.17 + tint, 0.42 + tint, 0.10, 1.0]);
         }
     }
 
@@ -198,6 +161,22 @@ fn generate_level(
     commands.spawn((
         Mesh3d(meshes.add(terrain_mesh)),
         MeshMaterial3d(materials.add(Color::WHITE)), // White so vertex colors show perfectly
+        Transform::IDENTITY,
+        RaceEntity,
+    ));
+
+    // 2b. High-resolution road ribbon laid over the terrain. Its own dense mesh
+    // gives crisp, high-def lane lines (yellow dashed centre, white edges) that the
+    // coarse terrain grid can't. Vertex-coloured, double-sided, no collider.
+    let road_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.95,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(build_road_mesh(&waypoints))),
+        MeshMaterial3d(road_mat),
         Transform::IDENTITY,
         RaceEntity,
     ));
@@ -272,4 +251,104 @@ fn generate_level(
     }
 
     state.set(GameState::Racing);
+}
+
+/// Builds a crisp road ribbon that follows the waypoint loop. The cross-section
+/// has hard colour bands (white edge lines · dark asphalt · dashed yellow centre)
+/// with vertices duplicated at each boundary so the lines stay sharp at any zoom.
+/// Vertices are draped onto the terrain so the road hugs the hills.
+fn build_road_mesh(waypoints: &[Vec3]) -> Mesh {
+    let num_wp = waypoints.len();
+
+    let yellow = [1.0, 0.82, 0.0];
+    let asphalt = [0.09, 0.09, 0.10];
+    let white = [0.9, 0.9, 0.9];
+
+    // (lateral offset from centre, colour, is_centre_line). Boundaries are
+    // duplicated (same offset, different colour) so each band is a solid colour.
+    let cross: [(f32, [f32; 3], bool); 10] = [
+        (-8.0, white, false),
+        (-6.8, white, false),
+        (-6.8, asphalt, false),
+        (-0.9, asphalt, false),
+        (-0.9, yellow, true),
+        (0.9, yellow, true),
+        (0.9, asphalt, false),
+        (6.8, asphalt, false),
+        (6.8, white, false),
+        (8.0, white, false),
+    ];
+
+    // Sample stations along the loop (~every 6 m so the ribbon drapes over hills).
+    let mut stations: Vec<(Vec3, Vec3)> = Vec::new(); // (centre point, right vector)
+    let mut dash_flags: Vec<bool> = Vec::new();
+    let mut cumulative = 0.0_f32;
+    const DASH_LEN: f32 = 12.0;
+
+    for i in 0..num_wp {
+        let a = waypoints[i];
+        let b = waypoints[(i + 1) % num_wp];
+        let seg = b - a;
+        let seg_len = seg.length().max(0.001);
+        let dir = seg / seg_len;
+        let right = Vec3::Y.cross(dir).normalize_or_zero();
+        let steps = (seg_len / 6.0).ceil().max(1.0) as usize;
+        for s in 0..steps {
+            let t = s as f32 / steps as f32;
+            let centre = a.lerp(b, t);
+            stations.push((Vec3::new(centre.x, 0.0, centre.z), right));
+            let d = cumulative + t * seg_len;
+            dash_flags.push(((d / DASH_LEN) as i32) % 2 == 0);
+        }
+        cumulative += seg_len;
+    }
+    let num_stations = stations.len();
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+
+    for (si, (centre, right)) in stations.iter().enumerate() {
+        let dash_on = dash_flags[si];
+        for (offset, base_color, is_centre) in cross.iter() {
+            let p = *centre + *right * *offset;
+            let y = get_terrain_height(p.x, p.z) + 0.2;
+            positions.push([p.x, y, p.z]);
+            normals.push([0.0, 1.0, 0.0]);
+            uvs.push([0.0, 0.0]);
+            // Centre line disappears in the dash gaps.
+            let col = if *is_centre && !dash_on { asphalt } else { *base_color };
+            colors.push([col[0], col[1], col[2], 1.0]);
+        }
+    }
+
+    let w = cross.len();
+    let mut indices: Vec<u32> = Vec::new();
+    for si in 0..num_stations {
+        let ni = (si + 1) % num_stations; // wrap to close the loop
+        for k in 0..(w - 1) {
+            let a = (si * w + k) as u32;
+            let b = (si * w + k + 1) as u32;
+            let c = (ni * w + k) as u32;
+            let d = (ni * w + k + 1) as u32;
+            indices.push(a);
+            indices.push(c);
+            indices.push(b);
+            indices.push(b);
+            indices.push(c);
+            indices.push(d);
+        }
+    }
+
+    let mut mesh = Mesh::new(
+        bevy::render::render_resource::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
 }
