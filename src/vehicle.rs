@@ -311,7 +311,7 @@ const AIR_ALIGN_TORQUE: f32 = 200.0; // gentler upright spring while airborne
 /// we can cancel it when driving the yaw rate directly (see `steering_yaw_rate`).
 pub const CAR_ANGULAR_DAMPING: f32 = 20.0;
 const WHEELBASE: f32 = 3.0; // front-to-rear axle distance
-const MAX_LAT_ACCEL: f32 = 36.0; // grip-limited lateral acceleration (the understeer cap)
+const MAX_LAT_ACCEL: f32 = 50.0; // grip-limited lateral acceleration (the understeer cap)
 
 /// Target yaw rate (rad/s about world up) for a car, from a speed-sensitive
 /// bicycle model. Turning is realistic and self-limiting at speed:
