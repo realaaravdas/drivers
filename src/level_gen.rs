@@ -101,23 +101,32 @@ fn generate_level(
     let total_size = (num_rows - 1) as f32 * grid_size;
     let half_size = total_size / 2.0;
 
-    // 1. Generate waypoints FIRST
-    let num_points = rng.random_range(24..40);
+    // 1. Generate waypoints FIRST — a smooth, organic closed loop. The radius is
+    // modulated by a few *integer* harmonics of the loop angle, which keeps it
+    // perfectly periodic (no kink at the seam) while giving flowing, realistic
+    // curves and straights instead of a jagged polygon.
+    let num_points = rng.random_range(30..46);
+    let base_radius = rng.random_range(520.0..760.0);
+    let tau = std::f32::consts::TAU;
+    let (a1, p1) = (rng.random_range(0.08..0.22), rng.random_range(0.0..tau));
+    let (a2, p2) = (rng.random_range(0.05..0.16), rng.random_range(0.0..tau));
+    let (a3, p3) = (rng.random_range(0.03..0.10), rng.random_range(0.0..tau));
+
     let mut waypoints: Vec<Vec3> = Vec::new();
-    
     for i in 0..num_points {
-        let angle = (i as f32 / num_points as f32) * std::f32::consts::TAU;
-        let radius = rng.random_range(12.0..24.0);
-        
-        let x = (angle.cos() * radius).round() * 40.0; // scale up
-        let z = (angle.sin() * radius).round() * 40.0;
-        
+        let angle = (i as f32 / num_points as f32) * tau;
+        let r = base_radius
+            * (1.0
+                + a1 * (angle + p1).sin()
+                + a2 * (2.0 * angle + p2).sin()
+                + a3 * (3.0 * angle + p3).sin());
+
+        let x = angle.cos() * r;
+        let z = angle.sin() * r;
+
         let mut pos = Vec3::new(x, 0.0, z);
         pos.y = get_terrain_height(pos.x, pos.z);
-        
-        if waypoints.is_empty() || waypoints.last().unwrap().distance(pos) > 1.0 {
-            waypoints.push(pos);
-        }
+        waypoints.push(pos);
     }
 
     level_data.waypoints = waypoints.clone();
@@ -307,6 +316,10 @@ fn generate_level(
         ));
     }
 
+    // 5. Scenery & traffic: trees, side roads, crosswalks, signals, rivers/bridges,
+    // tunnels and ambient NPC cars.
+    crate::props::populate_world(&mut commands, &mut meshes, &mut materials, &waypoints);
+
     state.set(GameState::Racing);
 }
 
@@ -337,28 +350,46 @@ fn build_road_mesh(waypoints: &[Vec3]) -> Mesh {
         (12.0, white, false),
     ];
 
-    // Sample stations along the loop (~every 6 m so the ribbon drapes over hills).
+    // Sample a Catmull-Rom spline THROUGH the waypoints so the road flows in smooth
+    // curves instead of straight chords between control points. The tangent at each
+    // sample gives the road's right vector, and arc-length drives the dash pattern.
     let mut stations: Vec<(Vec3, Vec3)> = Vec::new(); // (centre point, right vector)
     let mut dash_flags: Vec<bool> = Vec::new();
     let mut cumulative = 0.0_f32;
+    let mut prev_centre: Option<Vec3> = None;
     const DASH_LEN: f32 = 12.0;
 
+    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z);
+    let cr = |p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32| -> Vec3 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        0.5 * ((2.0 * p1)
+            + (-p0 + p2) * t
+            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+    };
+
     for i in 0..num_wp {
-        let a = waypoints[i];
-        let b = waypoints[(i + 1) % num_wp];
-        let seg = b - a;
-        let seg_len = seg.length().max(0.001);
-        let dir = seg / seg_len;
-        let right = Vec3::Y.cross(dir).normalize_or_zero();
-        let steps = (seg_len / 6.0).ceil().max(1.0) as usize;
+        let p0 = flat(waypoints[(i + num_wp - 1) % num_wp]);
+        let p1 = flat(waypoints[i]);
+        let p2 = flat(waypoints[(i + 1) % num_wp]);
+        let p3 = flat(waypoints[(i + 2) % num_wp]);
+        let seg_len = p1.distance(p2).max(0.001);
+        let steps = (seg_len / 6.0).ceil().max(2.0) as usize;
         for s in 0..steps {
             let t = s as f32 / steps as f32;
-            let centre = a.lerp(b, t);
-            stations.push((Vec3::new(centre.x, 0.0, centre.z), right));
-            let d = cumulative + t * seg_len;
-            dash_flags.push(((d / DASH_LEN) as i32) % 2 == 0);
+            let centre = cr(p0, p1, p2, p3, t);
+            let ahead = cr(p0, p1, p2, p3, t + 0.02);
+            let dir = flat(ahead - centre).normalize_or_zero();
+            let right = Vec3::Y.cross(dir).normalize_or_zero();
+
+            if let Some(prev) = prev_centre {
+                cumulative += centre.distance(prev);
+            }
+            prev_centre = Some(centre);
+            stations.push((centre, right));
+            dash_flags.push(((cumulative / DASH_LEN) as i32) % 2 == 0);
         }
-        cumulative += seg_len;
     }
     let num_stations = stations.len();
 

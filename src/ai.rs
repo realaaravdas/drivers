@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
+use rand::RngExt;
 use crate::game_state::{GameState, RaceEntity, GameDifficulty};
 use crate::level_gen::LevelData;
 use crate::vehicle::{Vehicle, Player, WheelFrontLeft, WheelFrontRight};
@@ -13,11 +14,24 @@ impl Plugin for AiPlugin {
     }
 }
 
+/// A racing opponent's driving personality. Each car gets a random mix, so they
+/// feel like distinct human drivers rather than clones.
 #[derive(Component)]
 pub struct AiDrivatar {
     pub current_waypoint: usize,
     pub stuck_time: f32,
     pub reversing_time: f32,
+    /// How hard they push / block / commit to corners (≈0.6 timid … 1.35 reckless).
+    pub aggression: f32,
+    /// How early/much they slow for corners (≈0.7 late-braker … 1.3 very careful).
+    pub caution: f32,
+    /// How cleanly they drive; low values make occasional mistakes (0.55 … 0.98).
+    pub consistency: f32,
+    /// Countdown of an in-progress mistake, and the steering wobble it applies.
+    pub mistake_timer: f32,
+    pub mistake_steer: f32,
+    /// Slight personal racing-line bias (apex-hugging vs wide), in metres.
+    pub line_bias: f32,
 }
 
 fn spawn_ai_cars(
@@ -28,6 +42,7 @@ fn spawn_ai_cars(
     difficulty: Res<GameDifficulty>,
 ) {
     let start_pos = level_data.start_pos;
+    let mut rng = rand::rng();
 
     // Spawn 12 AI cars with an offset
     for i in 1..=12 {
@@ -35,21 +50,24 @@ fn spawn_ai_cars(
         let col = if i % 2 == 0 { 1.0 } else { -1.0 };
         let offset = Vec3::new(col * 4.0, 0.0, row as f32 * 8.0);
         let mut spawn_pos = start_pos + offset;
-        
+
         let x = spawn_pos.x;
         let z = spawn_pos.z;
         let surface_y = crate::level_gen::get_terrain_height(x, z);
         spawn_pos.y = surface_y + 5.0;
-        
-        // 4 better, 4 same, 4 worse — then scaled by the AI difficulty setting.
-        let tier = if i <= 4 {
-            1.1
-        } else if i <= 8 {
-            1.0
-        } else {
-            0.9
-        };
-        let spec_mod = tier * difficulty.ai_skill;
+
+        // Difficulty-driven pace: every car's raw spec is the difficulty mean with
+        // a small random spread, so there are no fixed "tiers". Even the quickest
+        // car sits only ~14% above the mean, and their personality flaws (caution,
+        // mistakes, imperfect lines) mean a skilled player can beat any of them —
+        // while a high difficulty still makes the whole field genuinely fast.
+        let spec_mod = difficulty.ai_skill * (1.0 + rng.random_range(-0.12..0.14));
+
+        // Distinct human-like personality per car.
+        let aggression = rng.random_range(0.6..1.35);
+        let caution = rng.random_range(0.7..1.3);
+        let consistency = rng.random_range(0.55..0.98);
+        let line_bias = rng.random_range(-4.0..4.0);
 
         let tail_mat = materials.add(StandardMaterial {
             base_color: Color::srgb(0.3, 0.0, 0.0),
@@ -84,6 +102,12 @@ fn spawn_ai_cars(
                 current_waypoint: 1, // Start aiming at the second waypoint
                 stuck_time: 0.0,
                 reversing_time: 0.0,
+                aggression,
+                caution,
+                consistency,
+                mistake_timer: 0.0,
+                mistake_steer: 0.0,
+                line_bias,
             },
             crate::game_state::LapTracker {
                 current_lap: 1,
@@ -118,12 +142,13 @@ fn ai_update(
     let dt = time.delta_secs();
     let player_transform = player_query.iter().next();
     let rapier_ctx = rapier.single().ok();
-    
+    let mut rng = rand::rng();
+
     for (_entity, mut vehicle, mut force, transform, mut velocity, mut ai, children, mut tracker) in query.iter_mut() {
         if level_data.waypoints.is_empty() { continue; }
-        
+
         let target_wp = level_data.waypoints[tracker.next_waypoint];
-        
+
         // Lap and Waypoint logic
         if transform.translation.distance(target_wp) < 15.0 {
             tracker.next_waypoint += 1;
@@ -136,27 +161,27 @@ fn ai_update(
         }
 
         let target_wp = level_data.waypoints[ai.current_waypoint];
-        let mut target_pos = target_wp;
         let right: Vec3 = transform.right().into();
         let forward: Vec3 = transform.forward().into();
 
-        // Aggressive AI: Blocking behavior
+        // Personal racing line: nudge the aim point sideways a little.
+        let mut target_pos = target_wp + right * ai.line_bias;
+
+        // Blocking / defending — driven by this car's aggression and the global slider.
+        let effective_aggr = ai.aggression * difficulty.ai_aggressiveness;
         if let Some(p_transform) = player_transform {
             let to_player = p_transform.translation - transform.translation;
             let dist = to_player.length();
-            
-            if dist < 40.0 * difficulty.ai_aggressiveness {
+
+            if dist < 40.0 * effective_aggr {
                 let is_behind = forward.dot(to_player) < 0.0;
-                
                 if is_behind {
-                    // Player is behind, try to block by swerving into their lane
+                    // Player is behind — swerve to cover their line.
                     let lat_dist = right.dot(to_player);
-                    // Shift target position sideways in the direction of the player
-                    let block_shift = right * lat_dist.clamp(-15.0, 15.0) * 0.8 * difficulty.ai_aggressiveness;
-                    target_pos += block_shift;
+                    target_pos += right * lat_dist.clamp(-15.0, 15.0) * 0.8 * effective_aggr;
                 } else if dist < 15.0 {
-                    // Player is next to us or slightly ahead, swerve slightly into them
-                    target_pos = target_pos.lerp(p_transform.translation, 0.3 * difficulty.ai_aggressiveness);
+                    // Side by side — lean on them a bit.
+                    target_pos = target_pos.lerp(p_transform.translation, 0.3 * effective_aggr);
                 }
             }
         }
@@ -164,12 +189,13 @@ fn ai_update(
         let to_target = (target_pos - transform.translation).normalize_or_zero();
 
         let mut target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
-        
-        // Determine throttle (slow down if turning sharply)
+
+        // Throttle: full on straights; ease off into corners, less so for aggressive
+        // drivers (they carry more speed), more for cautious ones.
         let forward_dot = forward.dot(to_target);
-        let mut throttle = 1.0 * difficulty.ai_aggressiveness;
+        let mut throttle = 1.0_f32;
         if forward_dot < 0.5 {
-            throttle = 0.7 * difficulty.ai_aggressiveness; // Brake slightly, but don't become snails
+            throttle = (0.55 + 0.25 * ai.aggression).min(1.0);
         }
 
         // Obstacle avoidance: feeler rays detect buildings and other cars ahead
@@ -202,11 +228,23 @@ fn ai_update(
             ai.stuck_time = 0.0;
         }
 
-        // Corner craft: brake for tight/fast corners, and lay into a handbrake
-        // drift on hairpins. `forward_dot` is high on straights, low into a turn.
+        // Corner craft: cautious drivers brake earlier (at lower speed); aggressive
+        // drivers brake later and are the ones who commit to a handbrake drift.
         let speed = velocity.linear.length();
-        let mut braking = forward_dot < 0.35 && speed > 22.0;
-        let mut drifting = forward_dot < 0.1 && speed > 16.0;
+        let brake_speed = 24.0 / ai.caution;
+        let mut braking = forward_dot < 0.4 && speed > brake_speed;
+        let mut drifting = forward_dot < 0.12 && speed > 16.0 && ai.aggression > 1.0;
+
+        // Occasional human mistakes — more likely for low-consistency drivers. This
+        // is what lets a skilled player pick any of them off.
+        if ai.mistake_timer > 0.0 {
+            ai.mistake_timer -= dt;
+            target_steering = (target_steering + ai.mistake_steer).clamp(-1.0, 1.0);
+            throttle *= 0.8;
+        } else if rand::random::<f32>() < (1.0 - ai.consistency) * 0.004 {
+            ai.mistake_timer = rng.random_range(0.4..1.1);
+            ai.mistake_steer = rng.random_range(-0.45..0.45);
+        }
 
         if ai.reversing_time > 0.0 {
             ai.reversing_time -= dt;

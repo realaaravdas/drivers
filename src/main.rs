@@ -5,6 +5,7 @@ mod vehicle;
 mod ai;
 mod camera;
 mod hud;
+mod props;
 
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
@@ -24,6 +25,7 @@ fn main() {
         .add_plugins(ai::AiPlugin)
         .add_plugins(camera::CameraPlugin)
         .add_plugins(hud::HudPlugin)
+        .add_plugins(props::PropsPlugin)
         .add_systems(Startup, setup_environment)
         .add_systems(Update, check_exit_to_menu.run_if(in_state(GameState::Racing)))
         .add_systems(OnExit(GameState::Racing), cleanup_racing)
