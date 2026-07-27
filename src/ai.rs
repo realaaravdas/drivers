@@ -160,12 +160,29 @@ fn ai_update(
             ai.current_waypoint = tracker.next_waypoint;
         }
 
-        let target_wp = level_data.waypoints[ai.current_waypoint];
         let right: Vec3 = transform.right().into();
         let forward: Vec3 = transform.forward().into();
 
+        // Follow the actual road centreline: find the nearest point on it and aim
+        // a look-ahead distance further along. This keeps the AI ON the curvy road
+        // instead of cutting the chord between distant waypoints.
+        let cl = &level_data.road_centerline;
+        let mut nearest = 0usize;
+        let mut nd = f32::MAX;
+        for (idx, c) in cl.iter().enumerate() {
+            let dx = c.x - transform.translation.x;
+            let dz = c.z - transform.translation.z;
+            let d = dx * dx + dz * dz;
+            if d < nd {
+                nd = d;
+                nearest = idx;
+            }
+        }
+        let look = 6 + (velocity.linear.length() * 0.2) as usize;
+        let aim = cl[(nearest + look) % cl.len().max(1)];
+
         // Personal racing line: nudge the aim point sideways a little.
-        let mut target_pos = target_wp + right * ai.line_bias;
+        let mut target_pos = aim + right * ai.line_bias;
 
         // Blocking / defending — driven by this car's aggression and the global slider.
         let effective_aggr = ai.aggression * difficulty.ai_aggressiveness;

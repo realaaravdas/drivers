@@ -14,16 +14,6 @@ impl Plugin for PropsPlugin {
     }
 }
 
-// City street grid (matches the streets baked into the terrain in level_gen):
-// streets run on the 40 m block grid, offset 20 m so building blocks sit between.
-const BLOCK: f32 = 40.0;
-const STREET_OFFSET: f32 = 20.0;
-const CITY_HALF: f32 = 900.0; // scatter props within ±this
-const MAP_BOUND: f32 = 1400.0;
-const MAX_TREES: usize = 340;
-
-/// A traffic light that cycles green → yellow → red. Holds its three lamp
-/// materials so the cycling system can toggle their glow.
 #[derive(Component)]
 struct TrafficLight {
     offset: f32,
@@ -32,19 +22,24 @@ struct TrafficLight {
     green: Handle<StandardMaterial>,
 }
 
-/// An ambient (non-racing) traffic car that cruises along a city street.
+/// Ambient traffic car that drives back and forth along a straight avenue.
 #[derive(Component)]
 struct NpcCar {
-    velocity: Vec3,
+    origin: Vec3,
+    dir: Vec3,
+    length: f32,
+    speed: f32,
+    t: f32,
 }
 
-fn grid_indices() -> std::ops::RangeInclusive<i32> {
-    let n = (CITY_HALF / BLOCK) as i32;
-    -n..=n
-}
-
-fn street_coord(k: i32) -> f32 {
-    k as f32 * BLOCK + STREET_OFFSET
+fn dist_to_pts(x: f32, z: f32, pts: &[Vec3]) -> f32 {
+    let mut best = f32::MAX;
+    for p in pts {
+        let dx = p.x - x;
+        let dz = p.z - z;
+        best = best.min(dx * dx + dz * dz);
+    }
+    best.sqrt()
 }
 
 pub fn populate_world(
@@ -52,17 +47,19 @@ pub fn populate_world(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     waypoints: &[Vec3],
+    road_centerline: &[Vec3],
+    avenues: &[Vec<Vec3>],
 ) {
-    if waypoints.is_empty() {
+    if waypoints.is_empty() || road_centerline.is_empty() {
         return;
     }
     let mut rng = rand::rng();
 
-    spawn_trees(commands, meshes, materials, waypoints, &mut rng);
-    spawn_signals(commands, meshes, materials, waypoints, &mut rng);
-    spawn_npc_cars(commands, meshes, materials, &mut rng);
-    spawn_water_and_bridges(commands, meshes, materials, waypoints, &mut rng);
-    spawn_tunnel(commands, meshes, materials, waypoints);
+    spawn_trees(commands, meshes, materials, avenues, road_centerline, &mut rng);
+    spawn_signals(commands, meshes, materials, waypoints, road_centerline, &mut rng);
+    spawn_npc_cars(commands, meshes, materials, avenues, &mut rng);
+    spawn_lakes_and_bridge(commands, meshes, materials, road_centerline, &mut rng);
+    spawn_tunnel(commands, meshes, materials, road_centerline);
 }
 
 // --- Trees -----------------------------------------------------------------
@@ -71,7 +68,8 @@ fn spawn_trees(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
-    waypoints: &[Vec3],
+    avenues: &[Vec<Vec3>],
+    road_centerline: &[Vec3],
     rng: &mut impl RngExt,
 ) {
     let trunk_mesh = meshes.add(Cylinder::new(0.35, 5.0));
@@ -83,46 +81,29 @@ fn spawn_trees(
         materials.add(Color::srgb(0.1, 0.36, 0.16)),
     ];
 
-    let ks: Vec<i32> = grid_indices().collect();
-
-    // 1) Street trees lining the city grid. Randomly sampled across the WHOLE grid
-    // (rather than filling one street at a time) so they're spread evenly.
-    for _ in 0..MAX_TREES {
-        let k = ks[rng.random_range(0..ks.len())];
-        let along = rng.random_range(-CITY_HALF..CITY_HALF);
-        let side = if rng.random_range(0.0..1.0) < 0.5 { -1.0 } else { 1.0 };
-        // Half the trees line vertical streets, half line horizontal ones.
-        let base = if rng.random_range(0.0..1.0) < 0.5 {
-            Vec3::new(street_coord(k) + 10.0 * side, 0.0, along)
-        } else {
-            Vec3::new(along, 0.0, street_coord(k) + 10.0 * side)
-        };
-        let scale = rng.random_range(0.7..1.5);
-        let fmat = &foliage_mats[rng.random_range(0..foliage_mats.len())];
-        plant_tree(commands, &trunk_mesh, &foliage_mesh, &trunk_mat, fmat, base, scale);
-    }
-
-    // 2) Extra trees hugging the racing road so the circuit itself is tree-lined.
-    let num_wp = waypoints.len();
-    for i in 0..num_wp {
-        let a = waypoints[i];
-        let b = waypoints[(i + 1) % num_wp];
-        let seg = b - a;
-        let len = seg.length().max(0.001);
-        let dir = Vec3::new(seg.x, 0.0, seg.z).normalize_or_zero();
+    // Tree-lined avenues: walk each avenue and plant on both sides, clear of the
+    // racing road.
+    for av in avenues.iter() {
+        if av.len() < 2 {
+            continue;
+        }
+        let dir = (av[av.len() - 1] - av[0]).normalize_or_zero();
         let right = Vec3::Y.cross(dir).normalize_or_zero();
-        let mut d = 0.0;
-        while d < len {
-            d += 22.0;
+        let mut i = 0;
+        while i < av.len() {
+            let c = av[i];
+            i += 2; // avenue samples are 16 m apart → a tree ~every 32 m
             for side in [-1.0_f32, 1.0] {
-                if rng.random_range(0.0..1.0) < 0.5 {
+                if rng.random_range(0.0..1.0) < 0.4 {
                     continue;
                 }
-                let off = rng.random_range(13.0..20.0);
-                let base = a + dir * d + right * (off * side);
-                let scale = rng.random_range(0.7..1.5);
-                let fmat = &foliage_mats[rng.random_range(0..foliage_mats.len())];
-                plant_tree(commands, &trunk_mesh, &foliage_mesh, &trunk_mat, fmat, base, scale);
+                let base = c + right * (9.0 * side);
+                if dist_to_pts(base.x, base.z, road_centerline) < 14.0 {
+                    continue; // never on the racing road
+                }
+                plant_tree(commands, &trunk_mesh, &foliage_mesh, &trunk_mat,
+                    &foliage_mats[rng.random_range(0..foliage_mats.len())],
+                    base, rng.random_range(0.7..1.5));
             }
         }
     }
@@ -159,31 +140,33 @@ fn spawn_signals(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     waypoints: &[Vec3],
+    road_centerline: &[Vec3],
     rng: &mut impl RngExt,
 ) {
     let pole_mesh = meshes.add(Cylinder::new(0.4, 11.0));
-    let arm_mesh = meshes.add(Cuboid::new(6.0, 0.4, 0.4));
-    let housing_mesh = meshes.add(Cuboid::new(1.2, 3.2, 0.8));
-    let lamp_mesh = meshes.add(Sphere::new(0.5));
+    let arm_mesh = meshes.add(Cuboid::new(7.0, 0.4, 0.4));
+    let housing_mesh = meshes.add(Cuboid::new(1.3, 3.4, 0.9));
+    let lamp_mesh = meshes.add(Sphere::new(0.55));
     let pole_mat = materials.add(Color::srgb(0.08, 0.08, 0.1));
 
-    // Big, obvious signals on the racing circuit itself (every 3rd gate), so you
-    // actually see them while racing.
     let num_wp = waypoints.len();
-    for i in (0..num_wp).step_by(3) {
+    // A big signal on the circuit at every other gate.
+    for i in (0..num_wp).step_by(2) {
         let wp = waypoints[i];
         let next = waypoints[(i + 1) % num_wp];
         let dir = Vec3::new(next.x - wp.x, 0.0, next.z - wp.z).normalize_or_zero();
         let right = Vec3::Y.cross(dir).normalize_or_zero();
-        let base = wp + right * 13.0;
+        let base = wp + right * 13.0; // on the shoulder, off the 20 m road
+        if dist_to_pts(base.x, base.z, road_centerline) < 10.0 {
+            continue;
+        }
         let by = get_terrain_height(base.x, base.z);
+        let yaw = dir.x.atan2(dir.z);
 
         let red = materials.add(lamp_material(1.0, 0.1, 0.1, false));
         let yellow = materials.add(lamp_material(1.0, 0.9, 0.1, false));
         let green = materials.add(lamp_material(0.1, 1.0, 0.2, true));
 
-        // Signal head hangs over the road on an arm.
-        let over = -right * 6.0; // toward the road centre
         commands
             .spawn((
                 Mesh3d(pole_mesh.clone()),
@@ -198,22 +181,21 @@ fn spawn_signals(
                 },
             ))
             .with_children(|p| {
-                let yaw = dir.x.atan2(dir.z);
+                // Arm + signal head hang over the road (toward its centre).
                 p.spawn((
                     Mesh3d(arm_mesh.clone()),
                     MeshMaterial3d(pole_mat.clone()),
-                    Transform::from_xyz(over.x * 0.5, 5.0, over.z * 0.5)
-                        .with_rotation(Quat::from_rotation_y(yaw)),
+                    Transform::from_xyz(0.0, 5.0, -3.5).with_rotation(Quat::from_rotation_y(yaw)),
                 ));
-                let head = Vec3::new(over.x, 4.6, over.z);
+                let head = Vec3::new(0.0, 4.6, -7.0);
                 p.spawn((
                     Mesh3d(housing_mesh.clone()),
                     MeshMaterial3d(pole_mat.clone()),
-                    Transform::from_translation(head),
+                    Transform::from_translation(head).with_rotation(Quat::from_rotation_y(yaw)),
                 ));
-                p.spawn((Mesh3d(lamp_mesh.clone()), MeshMaterial3d(red), Transform::from_xyz(head.x, head.y + 1.0, head.z + 0.4)));
-                p.spawn((Mesh3d(lamp_mesh.clone()), MeshMaterial3d(yellow), Transform::from_xyz(head.x, head.y, head.z + 0.4)));
-                p.spawn((Mesh3d(lamp_mesh.clone()), MeshMaterial3d(green), Transform::from_xyz(head.x, head.y - 1.0, head.z + 0.4)));
+                p.spawn((Mesh3d(lamp_mesh.clone()), MeshMaterial3d(red), Transform::from_xyz(head.x, head.y + 1.1, head.z)));
+                p.spawn((Mesh3d(lamp_mesh.clone()), MeshMaterial3d(yellow), Transform::from_xyz(head.x, head.y, head.z)));
+                p.spawn((Mesh3d(lamp_mesh.clone()), MeshMaterial3d(green), Transform::from_xyz(head.x, head.y - 1.1, head.z)));
             });
     }
 }
@@ -261,14 +243,18 @@ fn cycle_traffic_lights(
     }
 }
 
-// --- NPC traffic -----------------------------------------------------------
+// --- NPC traffic on avenues ------------------------------------------------
 
 fn spawn_npc_cars(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    avenues: &[Vec<Vec3>],
     rng: &mut impl RngExt,
 ) {
+    if avenues.is_empty() {
+        return;
+    }
     let body_mesh = meshes.add(Cuboid::new(2.0, 1.0, 4.2));
     let cabin_mesh = meshes.add(Cuboid::new(1.6, 0.6, 1.8));
     let cabin_mat = materials.add(Color::srgb(0.08, 0.09, 0.12));
@@ -281,209 +267,231 @@ fn spawn_npc_cars(
         Color::srgb(0.2, 0.5, 0.3),
     ];
 
-    // Plenty of ambient traffic, all riding the city street grid.
-    for _ in 0..34 {
-        let k = rng.random_range(grid_indices());
-        let vertical = rng.random_range(0.0..1.0) < 0.5; // street runs along z?
-        let along = rng.random_range(-CITY_HALF..CITY_HALF);
-        let lane = if rng.random_range(0.0..1.0) < 0.5 { -3.0 } else { 3.0 };
-        let speed = rng.random_range(12.0..26.0);
-        let color = colors[rng.random_range(0..colors.len())];
+    // ~3 cars per avenue → lively traffic on the whole network.
+    for av in avenues.iter() {
+        if av.len() < 2 {
+            continue;
+        }
+        let start = av[0];
+        let end = av[av.len() - 1];
+        let full = end - start;
+        let length = full.length().max(1.0);
+        let dir = full / length;
+        let right = Vec3::Y.cross(dir).normalize_or_zero();
 
-        // Position on the chosen street, and velocity down its length.
-        let (pos, vel) = if vertical {
-            let x = street_coord(k) + lane;
-            let dir = if lane < 0.0 { 1.0 } else { -1.0 };
-            (Vec3::new(x, 0.0, along), Vec3::new(0.0, 0.0, dir * speed))
-        } else {
-            let z = street_coord(k) + lane;
-            let dir = if lane < 0.0 { 1.0 } else { -1.0 };
-            (Vec3::new(along, 0.0, z), Vec3::new(dir * speed, 0.0, 0.0))
-        };
-        let y = get_terrain_height(pos.x, pos.z) + 0.6;
+        for _ in 0..3 {
+            let lane = if rng.random_range(0.0..1.0) < 0.5 { -3.0 } else { 3.0 };
+            let travel = if lane < 0.0 { dir } else { -dir };
+            let origin = start + right * lane;
+            let t = rng.random_range(0.0..length);
+            let speed = rng.random_range(12.0..26.0);
+            let color = colors[rng.random_range(0..colors.len())];
+            let p = origin + travel * t;
+            let y = get_terrain_height(p.x, p.z) + 0.6;
 
-        commands
-            .spawn((
-                Mesh3d(body_mesh.clone()),
-                MeshMaterial3d(materials.add(color)),
-                Transform::from_xyz(pos.x, y, pos.z),
-                NpcCar { velocity: vel },
-                RaceEntity,
-            ))
-            .with_children(|c| {
-                c.spawn((
-                    Mesh3d(cabin_mesh.clone()),
-                    MeshMaterial3d(cabin_mat.clone()),
-                    Transform::from_xyz(0.0, 0.6, 0.1),
-                ));
-            });
+            commands
+                .spawn((
+                    Mesh3d(body_mesh.clone()),
+                    MeshMaterial3d(materials.add(color)),
+                    Transform::from_xyz(p.x, y, p.z),
+                    NpcCar {
+                        origin,
+                        dir: travel,
+                        length,
+                        speed,
+                        t,
+                    },
+                    RaceEntity,
+                ))
+                .with_children(|c| {
+                    c.spawn((
+                        Mesh3d(cabin_mesh.clone()),
+                        MeshMaterial3d(cabin_mat.clone()),
+                        Transform::from_xyz(0.0, 0.6, 0.1),
+                    ));
+                });
+        }
     }
 }
 
-fn drive_npc_cars(time: Res<Time>, mut query: Query<(&mut Transform, &NpcCar)>) {
+fn drive_npc_cars(time: Res<Time>, mut query: Query<(&mut Transform, &mut NpcCar)>) {
     let dt = time.delta_secs();
-    for (mut tf, npc) in query.iter_mut() {
-        tf.translation += npc.velocity * dt;
-
-        // Axis-aligned velocity + independent wrap keeps each car on its street.
-        if tf.translation.x > MAP_BOUND {
-            tf.translation.x = -MAP_BOUND;
-        } else if tf.translation.x < -MAP_BOUND {
-            tf.translation.x = MAP_BOUND;
+    for (mut tf, mut npc) in query.iter_mut() {
+        npc.t += npc.speed * dt;
+        if npc.t > npc.length {
+            npc.t -= npc.length; // loop back along the avenue
         }
-        if tf.translation.z > MAP_BOUND {
-            tf.translation.z = -MAP_BOUND;
-        } else if tf.translation.z < -MAP_BOUND {
-            tf.translation.z = MAP_BOUND;
-        }
-
-        tf.translation.y = get_terrain_height(tf.translation.x, tf.translation.z) + 0.6;
-        if npc.velocity.length_squared() > 0.01 {
-            tf.look_to(npc.velocity.normalize(), Vec3::Y);
-        }
+        let p = npc.origin + npc.dir * npc.t;
+        tf.translation = Vec3::new(p.x, get_terrain_height(p.x, p.z) + 0.6, p.z);
+        tf.look_to(npc.dir, Vec3::Y);
     }
 }
 
-// --- Water (lakes/rivers) + bridges ----------------------------------------
+// --- Lakes + a giant bridge on the circuit ---------------------------------
 
-fn spawn_water_and_bridges(
+fn spawn_lakes_and_bridge(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
-    waypoints: &[Vec3],
+    road_centerline: &[Vec3],
     rng: &mut impl RngExt,
 ) {
-    // Find the two lowest basins by sampling a coarse grid, and drop a lake into
-    // each so there's visible water down in the valleys.
+    // Lakes in the two lowest basins.
     let mut samples: Vec<(f32, Vec3)> = Vec::new();
-    let step = 140.0;
     let mut gx = -1200.0;
     while gx <= 1200.0 {
         let mut gz = -1200.0;
         while gz <= 1200.0 {
-            let h = get_terrain_height(gx, gz);
-            samples.push((h, Vec3::new(gx, 0.0, gz)));
-            gz += step;
+            samples.push((get_terrain_height(gx, gz), Vec3::new(gx, 0.0, gz)));
+            gz += 140.0;
         }
-        gx += step;
+        gx += 140.0;
     }
     samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
     let water_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.1, 0.35, 0.62, 0.75),
         perceptual_roughness: 0.08,
-        metallic: 0.1,
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
-
-    let mut lake_centres: Vec<(Vec3, f32)> = Vec::new();
-    for (h, centre) in samples.iter().take(2) {
-        let surface = h + 1.5;
-        let (w, d) = (rng.random_range(260.0..360.0), rng.random_range(180.0..260.0));
-        // A slab sunk into the basin; surrounding higher terrain hides the edges,
-        // leaving a natural lake shape.
+    for (h, c) in samples.iter().take(2) {
+        let (w, d) = (rng.random_range(280.0..380.0), rng.random_range(200.0..280.0));
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(w, 8.0, d))),
             MeshMaterial3d(water_mat.clone()),
-            Transform::from_xyz(centre.x, surface - 4.0, centre.z),
+            Transform::from_xyz(c.x, h + 1.5 - 4.0, c.z),
             RaceEntity,
         ));
-        lake_centres.push((*centre, surface));
     }
 
-    // Bridge: dress the stretch of racing road that passes nearest a lake with
-    // railings and support pillars dropping toward the water.
-    if lake_centres.is_empty() {
-        return;
-    }
-    let (lake_c, water_y) = lake_centres[0];
-    let num_wp = waypoints.len();
-    let mut best = (f32::MAX, 0usize);
-    for i in 0..num_wp {
-        let d = Vec3::new(waypoints[i].x, 0.0, waypoints[i].z).distance(lake_c);
-        if d < best.0 {
-            best = (d, i);
+    // Giant bridge where the racing road passes its LOWEST point (a valley): two
+    // tall towers flanking the road, deck railings, support pillars and cables.
+    let mut low = (f32::MAX, 0usize);
+    for (i, c) in road_centerline.iter().enumerate() {
+        let h = get_terrain_height(c.x, c.z);
+        if h < low.0 {
+            low = (h, i);
         }
     }
-    let rail_mat = materials.add(Color::srgb(0.55, 0.55, 0.6));
-    let pillar_mat = materials.add(Color::srgb(0.42, 0.42, 0.45));
-    for j in -2i32..=2 {
-        let idx = ((best.1 as i32 + j).rem_euclid(num_wp as i32)) as usize;
-        let wp = waypoints[idx];
-        let next = waypoints[(idx + 1) % num_wp];
-        let dir = Vec3::new(next.x - wp.x, 0.0, next.z - wp.z).normalize_or_zero();
-        let right = Vec3::Y.cross(dir).normalize_or_zero();
-        let road_y = get_terrain_height(wp.x, wp.z) + 0.4;
-        let yaw = dir.x.atan2(dir.z);
+    let n = road_centerline.len();
+    let li = low.1;
+    let c = road_centerline[li];
+    let ahead = road_centerline[(li + 1) % n];
+    let dir = Vec3::new(ahead.x - c.x, 0.0, ahead.z - c.z).normalize_or_zero();
+    let right = Vec3::Y.cross(dir).normalize_or_zero();
+    let yaw = dir.x.atan2(dir.z);
+    let road_y = get_terrain_height(c.x, c.z) + 0.4;
 
+    let steel = materials.add(Color::srgb(0.75, 0.2, 0.15)); // "golden gate" red
+    let cable_mat = materials.add(Color::srgb(0.3, 0.1, 0.08));
+    let tower_mesh = meshes.add(Cuboid::new(3.0, 46.0, 3.0));
+    let cross_mesh = meshes.add(Cuboid::new(26.0, 2.5, 2.0));
+
+    for side in [-1.0_f32, 1.0] {
+        let p = c + right * (12.0 * side);
+        // Tall tower.
+        commands.spawn((
+            Mesh3d(tower_mesh.clone()),
+            MeshMaterial3d(steel.clone()),
+            Transform::from_xyz(p.x, road_y + 23.0, p.z).with_rotation(Quat::from_rotation_y(yaw)),
+            RaceEntity,
+        ));
+    }
+    // Cross-beam over the road linking the towers.
+    commands.spawn((
+        Mesh3d(cross_mesh.clone()),
+        MeshMaterial3d(steel.clone()),
+        Transform::from_xyz(c.x, road_y + 42.0, c.z).with_rotation(Quat::from_rotation_y(yaw)),
+        RaceEntity,
+    ));
+
+    // Deck railings, pillars and slung "cables" along a stretch of the road.
+    for j in -6i32..=6 {
+        let idx = ((li as i32 + j).rem_euclid(n as i32)) as usize;
+        let cc = road_centerline[idx];
+        let nn = road_centerline[(idx + 1) % n];
+        let d = Vec3::new(nn.x - cc.x, 0.0, nn.z - cc.z).normalize_or_zero();
+        let r = Vec3::Y.cross(d).normalize_or_zero();
+        let y = get_terrain_height(cc.x, cc.z) + 0.4;
+        let yw = d.x.atan2(d.z);
         for side in [-1.0_f32, 1.0] {
-            let p = wp + right * (10.5 * side);
+            let p = cc + r * (11.0 * side);
             commands.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.4, 1.2, 26.0))),
-                MeshMaterial3d(rail_mat.clone()),
-                Transform::from_xyz(p.x, road_y + 0.6, p.z).with_rotation(Quat::from_rotation_y(yaw)),
+                Mesh3d(meshes.add(Cuboid::new(0.4, 1.4, 8.0))),
+                MeshMaterial3d(steel.clone()),
+                Transform::from_xyz(p.x, y + 0.7, p.z).with_rotation(Quat::from_rotation_y(yw)),
                 RaceEntity,
             ));
-            let pillar_h = (road_y - water_y).max(2.0);
+            // Support pillar to the valley floor.
+            let ph = (y - low.0).max(3.0) + 6.0;
             commands.spawn((
-                Mesh3d(meshes.add(Cuboid::new(1.6, pillar_h, 1.6))),
-                MeshMaterial3d(pillar_mat.clone()),
-                Transform::from_xyz(p.x, water_y + pillar_h / 2.0 - 4.0, p.z),
+                Mesh3d(meshes.add(Cuboid::new(1.4, ph, 1.4))),
+                MeshMaterial3d(cable_mat.clone()),
+                Transform::from_xyz(p.x, y - ph / 2.0, p.z),
                 RaceEntity,
             ));
         }
     }
 }
 
-// --- Tunnel (drivable) -----------------------------------------------------
+// --- Giant drivable tunnel on the circuit ----------------------------------
 
 fn spawn_tunnel(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
-    waypoints: &[Vec3],
+    road_centerline: &[Vec3],
 ) {
-    let num_wp = waypoints.len();
-    // Highest point on the loop → run a covered tunnel through the hill there.
+    let n = road_centerline.len();
+    // Highest point on the actual road → bore a covered tunnel through the hill.
     let mut hi = (f32::MIN, 0usize);
-    for i in 0..num_wp {
-        let h = get_terrain_height(waypoints[i].x, waypoints[i].z);
+    for (i, c) in road_centerline.iter().enumerate() {
+        let h = get_terrain_height(c.x, c.z);
         if h > hi.0 {
             hi = (h, i);
         }
     }
-    let i = hi.1;
-    let a = waypoints[i];
-    let b = waypoints[(i + 1) % num_wp];
-    let dir = Vec3::new(b.x - a.x, 0.0, b.z - a.z).normalize_or_zero();
-    let right = Vec3::Y.cross(dir).normalize_or_zero();
-    let yaw = dir.x.atan2(dir.z);
 
-    let wall_mat = materials.add(Color::srgb(0.28, 0.28, 0.32));
-    let wall_mesh = meshes.add(Cuboid::new(2.0, 8.0, 6.0));
-    let roof_mesh = meshes.add(Cuboid::new(24.0, 1.5, 6.0));
+    let wall_mat = materials.add(Color::srgb(0.26, 0.26, 0.3));
+    let portal_mat = materials.add(Color::srgb(0.35, 0.35, 0.4));
+    let wall_mesh = meshes.add(Cuboid::new(2.0, 10.0, 8.0));
+    let roof_mesh = meshes.add(Cuboid::new(28.0, 2.0, 8.0));
 
-    // Build ~60 m of covered corridor centred on the peak.
-    let mut d = -30.0_f32;
-    while d <= 30.0 {
-        let c = a + dir * d;
+    // ~110 m covered corridor centred on the peak (road samples are ~6 m apart).
+    let span = 9i32;
+    for j in -span..=span {
+        let idx = ((hi.1 as i32 + j).rem_euclid(n as i32)) as usize;
+        let c = road_centerline[idx];
+        let nn = road_centerline[(idx + 1) % n];
+        let d = Vec3::new(nn.x - c.x, 0.0, nn.z - c.z).normalize_or_zero();
+        let r = Vec3::Y.cross(d).normalize_or_zero();
         let gy = get_terrain_height(c.x, c.z);
+        let yaw = d.x.atan2(d.z);
         for side in [-1.0_f32, 1.0] {
-            let p = c + right * (11.0 * side);
+            let p = c + r * (12.0 * side);
             commands.spawn((
                 Mesh3d(wall_mesh.clone()),
                 MeshMaterial3d(wall_mat.clone()),
-                Transform::from_xyz(p.x, gy + 4.0, p.z).with_rotation(Quat::from_rotation_y(yaw)),
+                Transform::from_xyz(p.x, gy + 5.0, p.z).with_rotation(Quat::from_rotation_y(yaw)),
                 RaceEntity,
             ));
         }
         commands.spawn((
             Mesh3d(roof_mesh.clone()),
             MeshMaterial3d(wall_mat.clone()),
-            Transform::from_xyz(c.x, gy + 8.0, c.z).with_rotation(Quat::from_rotation_y(yaw)),
+            Transform::from_xyz(c.x, gy + 10.0, c.z).with_rotation(Quat::from_rotation_y(yaw)),
             RaceEntity,
         ));
-        d += 6.0;
+
+        // Big portal lintel ABOVE each entrance (kept clear of the road opening).
+        if j == -span || j == span {
+            commands.spawn((
+                Mesh3d(meshes.add(Cuboid::new(34.0, 7.0, 2.0))),
+                MeshMaterial3d(portal_mat.clone()),
+                Transform::from_xyz(c.x, gy + 14.5, c.z).with_rotation(Quat::from_rotation_y(yaw)),
+                RaceEntity,
+            ));
+        }
     }
 }

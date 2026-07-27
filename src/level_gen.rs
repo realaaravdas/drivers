@@ -19,6 +19,25 @@ impl Plugin for LevelGenPlugin {
 pub struct LevelData {
     pub waypoints: Vec<Vec3>,
     pub start_pos: Vec3,
+    /// Dense samples of the racing-road centreline (xz, y=0). Used to keep props
+    /// off the road and to let the AI follow the actual curve, not just waypoints.
+    pub road_centerline: Vec<Vec3>,
+    /// Each side-street avenue as a sampled centreline (xz, y=0).
+    pub avenues: Vec<Vec<Vec3>>,
+}
+
+/// Minimum horizontal distance from a point to the nearest of a set of points.
+fn min_dist_to_points(x: f32, z: f32, points: &[Vec3]) -> f32 {
+    let mut best = f32::MAX;
+    for p in points {
+        let dx = p.x - x;
+        let dz = p.z - z;
+        let d2 = dx * dx + dz * dz;
+        if d2 < best {
+            best = d2;
+        }
+    }
+    best.sqrt()
 }
 
 const GRID_SIZE: i32 = 10;
@@ -127,11 +146,19 @@ fn generate_level(
     level_data.waypoints = waypoints.clone();
     level_data.start_pos = waypoints[0] + Vec3::Y * 5.0;
 
-    let distance_to_segment = |p: Vec3, a: Vec3, b: Vec3| -> f32 {
-        let pa = p - a;
-        let ba = b - a;
-        let h = (pa.dot(ba) / ba.dot(ba)).clamp(0.0, 1.0);
-        (pa - ba * h).length()
+    // Dense racing-road centreline (shared by the road mesh, AI path-following and
+    // obstruction clearing) and a varied network of side-street avenues.
+    let road_centerline = sample_road_centerline(&waypoints);
+    let avenues = generate_avenues(&mut rng);
+    level_data.road_centerline = road_centerline.clone();
+    level_data.avenues = avenues.clone();
+
+    let dist_to_road = |x: f32, z: f32| min_dist_to_points(x, z, &road_centerline);
+    let dist_to_avenue = |x: f32, z: f32| {
+        avenues
+            .iter()
+            .map(|av| min_dist_to_points(x, z, av))
+            .fold(f32::MAX, f32::min)
     };
 
     // 2. Generate heightfield and vertex colors
@@ -152,21 +179,10 @@ fn generate_level(
             normals.push([0.0, 1.0, 0.0]); // We'll compute real normals later
             uvs.push([x as f32 / num_rows as f32, z as f32 / num_cols as f32]);
 
-            // City ground: a grid of streets (dark asphalt) between grass blocks,
-            // baked into the terrain so it drapes over the hills with zero extra
-            // meshes. Streets run on the 40 m block grid, offset 20 m so building
-            // blocks sit between them. The main racing road is a crisp ribbon on top.
-            let mx = (px - 20.0).rem_euclid(40.0);
-            let mz = (pz - 20.0).rem_euclid(40.0);
-            let dist_street = mx.min(40.0 - mx).min(mz.min(40.0 - mz));
-            if dist_street < 7.5 {
-                colors.push([0.12, 0.12, 0.14, 1.0]); // asphalt street
-            } else if dist_street < 9.5 {
-                colors.push([0.55, 0.55, 0.58, 1.0]); // pale sidewalk band
-            } else {
-                let tint = 0.03 * ((px * 0.03).sin() * (pz * 0.037).cos());
-                colors.push([0.17 + tint, 0.42 + tint, 0.10, 1.0]); // grass block
-            }
+            // Ground is grass; streets are real ribbon meshes on top (see avenues
+            // and the racing road) rather than faint marks baked into this coarse grid.
+            let tint = 0.03 * ((px * 0.03).sin() * (pz * 0.037).cos());
+            colors.push([0.17 + tint, 0.42 + tint, 0.10, 1.0]);
         }
     }
 
@@ -219,9 +235,8 @@ fn generate_level(
         RaceEntity,
     ));
 
-    // 2b. High-resolution road ribbon laid over the terrain. Its own dense mesh
-    // gives crisp, high-def lane lines (yellow dashed centre, white edges) that the
-    // coarse terrain grid can't. Vertex-coloured, double-sided, no collider.
+    // 2b. High-resolution racing-road ribbon (crisp lane lines), and the network
+    // of side-street avenues — all real ribbon meshes draped on the terrain.
     let road_mat = materials.add(StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: 0.95,
@@ -229,15 +244,31 @@ fn generate_level(
         ..default()
     });
     commands.spawn((
-        Mesh3d(meshes.add(build_road_mesh(&waypoints))),
+        Mesh3d(meshes.add(build_road_mesh(&road_centerline))),
         MeshMaterial3d(road_mat),
         Transform::IDENTITY,
         RaceEntity,
     ));
 
-    // 3. Generate Buildings — windowed skyscrapers. A shared window texture (with
-    // a few colour tints) is UV-tiled per building, so they look detailed without
-    // any extra entities.
+    let avenue_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.95,
+        cull_mode: None,
+        ..default()
+    });
+    for av in avenues.iter() {
+        commands.spawn((
+            Mesh3d(meshes.add(build_avenue_mesh(av))),
+            MeshMaterial3d(avenue_mat.clone()),
+            Transform::IDENTITY,
+            RaceEntity,
+        ));
+    }
+
+    // 3. City blocks. Buildings are windowed towers whose height rises toward
+    // downtown (map centre). We clear anything that would sit on the racing road
+    // or an avenue, leave some empty lots and green parks for variety, and plant
+    // park trees.
     let window_tex = images.add(create_window_texture());
     let tints = [
         Color::srgb(0.72, 0.74, 0.80),
@@ -245,6 +276,7 @@ fn generate_level(
         Color::srgb(0.80, 0.74, 0.64),
         Color::srgb(0.62, 0.68, 0.62),
         Color::srgb(0.70, 0.66, 0.70),
+        Color::srgb(0.5, 0.52, 0.6),
     ];
     let building_mats: Vec<Handle<StandardMaterial>> = tints
         .iter()
@@ -260,56 +292,91 @@ fn generate_level(
         })
         .collect();
 
-    // Footprint 16 m within the 40 m block leaves a sidewalk/tree strip between
-    // the building and the 15 m streets baked into the ground.
-    let footprint = 16.0_f32;
+    // Park meshes (used for tree clusters in green blocks).
+    let trunk_mesh = meshes.add(Cylinder::new(0.35, 5.0));
+    let foliage_mesh = meshes.add(Cone { radius: 2.8, height: 7.0 });
+    let trunk_mat = materials.add(Color::srgb(0.32, 0.2, 0.1));
+    let park_foliage = materials.add(Color::srgb(0.14, 0.46, 0.13));
+
+    // A handful of parks scattered through the city.
+    let parks: Vec<Vec2> = (0..7)
+        .map(|_| Vec2::new(rng.random_range(-700.0..700.0), rng.random_range(-700.0..700.0)))
+        .collect();
+    let park_radius = 70.0;
+
     let _ = ROAD_WIDTH;
     let building_grid = 30; // 60x60 grid
-    for x in -building_grid..=building_grid {
-        for z in -building_grid..=building_grid {
-            let pos_x = x as f32 * BLOCK_SIZE;
-            let pos_z = z as f32 * BLOCK_SIZE;
-            let mut pos = Vec3::new(pos_x, 0.0, pos_z);
-            pos.y = get_terrain_height(pos.x, pos.z);
+    for gx in -building_grid..=building_grid {
+        for gz in -building_grid..=building_grid {
+            let px = gx as f32 * BLOCK_SIZE;
+            let pz = gz as f32 * BLOCK_SIZE;
 
-            let mut is_track = false;
-            let num_wp = waypoints.len();
-            for i in 0..num_wp {
-                let wp1 = waypoints[i];
-                let wp2 = waypoints[(i + 1) % num_wp];
-
-                if distance_to_segment(Vec3::new(pos.x, 0.0, pos.z), Vec3::new(wp1.x, 0.0, wp1.z), Vec3::new(wp2.x, 0.0, wp2.z)) < BLOCK_SIZE * 0.8 {
-                    is_track = true;
-                    break;
-                }
+            // Keep the racing road and avenues completely clear.
+            if dist_to_road(px, pz) < 22.0 || dist_to_avenue(px, pz) < 15.0 {
+                continue;
             }
 
-            if !is_track {
-                let height = rng.random_range(15.0..70.0);
-
-                // Tile the window texture: ~4 m per window across and per floor.
-                let mut bmesh: Mesh = Cuboid::new(footprint, height, footprint).into();
-                let sx = footprint / 4.0;
-                let sy = height / 4.0;
-                if let Some(VertexAttributeValues::Float32x2(uvs)) =
-                    bmesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
-                {
-                    for uv in uvs.iter_mut() {
-                        uv[0] *= sx;
-                        uv[1] *= sy;
+            // Parks: no buildings, scatter a few trees instead.
+            if let Some(park) = parks.iter().find(|p| p.distance(Vec2::new(px, pz)) < park_radius) {
+                let _ = park;
+                for _ in 0..2 {
+                    let tx = px + rng.random_range(-14.0..14.0);
+                    let tz = pz + rng.random_range(-14.0..14.0);
+                    if dist_to_road(tx, tz) < 18.0 {
+                        continue;
                     }
+                    let ty = get_terrain_height(tx, tz);
+                    let s = rng.random_range(0.8..1.6);
+                    commands.spawn((
+                        Mesh3d(trunk_mesh.clone()),
+                        MeshMaterial3d(trunk_mat.clone()),
+                        Transform::from_xyz(tx, ty + 2.5 * s, tz).with_scale(Vec3::splat(s)),
+                        RaceEntity,
+                    ));
+                    commands.spawn((
+                        Mesh3d(foliage_mesh.clone()),
+                        MeshMaterial3d(park_foliage.clone()),
+                        Transform::from_xyz(tx, ty + 8.0 * s, tz).with_scale(Vec3::splat(s)),
+                        RaceEntity,
+                    ));
                 }
-
-                let mat = building_mats[rng.random_range(0..building_mats.len())].clone();
-
-                commands.spawn((
-                    Mesh3d(meshes.add(bmesh)),
-                    MeshMaterial3d(mat),
-                    Transform::from_xyz(pos.x, pos.y + height / 2.0 - 5.0, pos.z),
-                    Collider::cuboid(footprint / 2.0, height / 2.0, footprint / 2.0),
-                    RaceEntity,
-                ));
+                continue;
             }
+
+            // Some empty lots for variety.
+            if rng.random_range(0.0..1.0) < 0.12 {
+                continue;
+            }
+
+            // Height rises toward downtown (map centre) for a real skyline.
+            let dist_center = (px * px + pz * pz).sqrt();
+            let downtown = (1.0 - dist_center / 750.0).clamp(0.0, 1.0);
+            let height =
+                rng.random_range(10.0..22.0) + downtown * downtown * rng.random_range(20.0..85.0);
+            let footprint = rng.random_range(14.0..22.0);
+            let pos_y = get_terrain_height(px, pz);
+
+            // Tile the window texture: ~4 m per window across and per floor.
+            let mut bmesh: Mesh = Cuboid::new(footprint, height, footprint).into();
+            let sx = footprint / 4.0;
+            let sy = height / 4.0;
+            if let Some(VertexAttributeValues::Float32x2(uvs)) =
+                bmesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+            {
+                for uv in uvs.iter_mut() {
+                    uv[0] *= sx;
+                    uv[1] *= sy;
+                }
+            }
+
+            let mat = building_mats[rng.random_range(0..building_mats.len())].clone();
+            commands.spawn((
+                Mesh3d(meshes.add(bmesh)),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(px, pos_y + height / 2.0 - 5.0, pz),
+                Collider::cuboid(footprint / 2.0, height / 2.0, footprint / 2.0),
+                RaceEntity,
+            ));
         }
     }
 
@@ -324,27 +391,167 @@ fn generate_level(
         ));
     }
 
-    // 5. Scenery & traffic: trees, side roads, crosswalks, signals, rivers/bridges,
-    // tunnels and ambient NPC cars.
-    crate::props::populate_world(&mut commands, &mut meshes, &mut materials, &waypoints);
+    // 5. Scenery & traffic: trees, signals, giant bridge/tunnel on the circuit,
+    // lakes and ambient NPC cars — all placed clear of the racing road.
+    crate::props::populate_world(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &waypoints,
+        &road_centerline,
+        &avenues,
+    );
 
     state.set(GameState::Racing);
 }
 
-/// Builds a crisp road ribbon that follows the waypoint loop. The cross-section
-/// has hard colour bands (white edge lines · dark asphalt · dashed yellow centre)
-/// with vertices duplicated at each boundary so the lines stay sharp at any zoom.
-/// Vertices are draped onto the terrain so the road hugs the hills.
-fn build_road_mesh(waypoints: &[Vec3]) -> Mesh {
+/// Samples a Catmull-Rom spline through the waypoints into a dense, closed
+/// centreline (xz, y=0) — the true racing line the road, AI and obstruction
+/// checks all share.
+pub fn sample_road_centerline(waypoints: &[Vec3]) -> Vec<Vec3> {
     let num_wp = waypoints.len();
+    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z);
+    let cr = |p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32| -> Vec3 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        0.5 * ((2.0 * p1)
+            + (-p0 + p2) * t
+            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+    };
+    let mut out = Vec::new();
+    for i in 0..num_wp {
+        let p0 = flat(waypoints[(i + num_wp - 1) % num_wp]);
+        let p1 = flat(waypoints[i]);
+        let p2 = flat(waypoints[(i + 1) % num_wp]);
+        let p3 = flat(waypoints[(i + 2) % num_wp]);
+        let seg_len = p1.distance(p2).max(0.001);
+        let steps = (seg_len / 6.0).ceil().max(2.0) as usize;
+        for s in 0..steps {
+            let t = s as f32 / steps as f32;
+            out.push(cr(p0, p1, p2, p3, t));
+        }
+    }
+    out
+}
 
+/// A varied network of straight side-street avenues (varied spacing + a couple of
+/// diagonals), each returned as a sampled centreline (xz, y=0).
+fn generate_avenues(rng: &mut impl RngExt) -> Vec<Vec<Vec3>> {
+    let mut avenues = Vec::new();
+    let extent = 1300.0;
+    let sample = |a: Vec3, dir: Vec3| -> Vec<Vec3> {
+        let mut line = Vec::new();
+        let mut t = -extent;
+        while t <= extent {
+            let p = a + dir * t;
+            line.push(Vec3::new(p.x, 0.0, p.z));
+            t += 16.0;
+        }
+        line
+    };
+
+    // Horizontal avenues (constant z, varied spacing).
+    let mut z = -1150.0;
+    while z < 1150.0 {
+        z += rng.random_range(120.0..260.0);
+        avenues.push(sample(Vec3::new(0.0, 0.0, z), Vec3::X));
+    }
+    // Vertical avenues (constant x, varied spacing).
+    let mut x = -1150.0;
+    while x < 1150.0 {
+        x += rng.random_range(120.0..260.0);
+        avenues.push(sample(Vec3::new(x, 0.0, 0.0), Vec3::Z));
+    }
+    // A couple of diagonal boulevards for variety.
+    for _ in 0..2 {
+        let angle = rng.random_range(0.35_f32..1.2);
+        let dir = Vec3::new(angle.cos(), 0.0, angle.sin());
+        let perp = Vec3::Y.cross(dir).normalize_or_zero();
+        let off = perp * rng.random_range(-450.0..450.0);
+        avenues.push(sample(off, dir));
+    }
+    avenues
+}
+
+/// Builds a plain draped asphalt avenue (open strip) with a dashed yellow centre
+/// line and white edges.
+fn build_avenue_mesh(centerline: &[Vec3]) -> Mesh {
+    let yellow = [0.9, 0.75, 0.0];
+    let asphalt = [0.1, 0.1, 0.11];
+    let white = [0.8, 0.8, 0.82];
+    let cross: [(f32, [f32; 3], bool); 10] = [
+        (-7.0, white, false),
+        (-6.0, white, false),
+        (-6.0, asphalt, false),
+        (-0.4, asphalt, false),
+        (-0.4, yellow, true),
+        (0.4, yellow, true),
+        (0.4, asphalt, false),
+        (6.0, asphalt, false),
+        (6.0, white, false),
+        (7.0, white, false),
+    ];
+
+    let n = centerline.len();
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut cumulative = 0.0_f32;
+    let w = cross.len();
+
+    for i in 0..n {
+        let centre = centerline[i];
+        let prev = centerline[i.saturating_sub(1)];
+        let next = centerline[(i + 1).min(n - 1)];
+        let dir = Vec3::new(next.x - prev.x, 0.0, next.z - prev.z).normalize_or_zero();
+        let right = Vec3::Y.cross(dir).normalize_or_zero();
+        cumulative += centre.distance(prev);
+        let dash_on = ((cumulative / 10.0) as i32) % 2 == 0;
+        for (offset, base_color, is_centre) in cross.iter() {
+            let p = centre + right * *offset;
+            let y = get_terrain_height(p.x, p.z) + 0.22;
+            positions.push([p.x, y, p.z]);
+            normals.push([0.0, 1.0, 0.0]);
+            uvs.push([0.0, 0.0]);
+            let col = if *is_centre && !dash_on { asphalt } else { *base_color };
+            colors.push([col[0], col[1], col[2], 1.0]);
+        }
+    }
+
+    let mut indices: Vec<u32> = Vec::new();
+    for i in 0..n.saturating_sub(1) {
+        for k in 0..(w - 1) {
+            let a = (i * w + k) as u32;
+            let b = (i * w + k + 1) as u32;
+            let c = ((i + 1) * w + k) as u32;
+            let d = ((i + 1) * w + k + 1) as u32;
+            indices.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+    }
+
+    let mut mesh = Mesh::new(
+        bevy::render::render_resource::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+/// Builds a crisp road ribbon along a centreline. The cross-section has hard
+/// colour bands (white edge lines · dark asphalt · dashed yellow centre) with
+/// vertices duplicated at each boundary so the lines stay sharp. Draped on terrain.
+fn build_road_mesh(centerline: &[Vec3]) -> Mesh {
     let yellow = [1.0, 0.82, 0.0];
     let asphalt = [0.09, 0.09, 0.10];
     let white = [0.9, 0.9, 0.9];
 
-    // (lateral offset from centre, colour, is_centre_line). Boundaries are
-    // duplicated (same offset, different colour) so each band is a solid colour.
-    // Half-width 10 → a 20 m road that stays clean through tight curves.
+    // (lateral offset from centre, colour, is_centre_line). Half-width 10 → 20 m.
     let cross: [(f32, [f32; 3], bool); 10] = [
         (-10.0, white, false),
         (-8.5, white, false),
@@ -358,46 +565,20 @@ fn build_road_mesh(waypoints: &[Vec3]) -> Mesh {
         (10.0, white, false),
     ];
 
-    // Sample a Catmull-Rom spline THROUGH the waypoints so the road flows in smooth
-    // curves instead of straight chords between control points. The tangent at each
-    // sample gives the road's right vector, and arc-length drives the dash pattern.
-    let mut stations: Vec<(Vec3, Vec3)> = Vec::new(); // (centre point, right vector)
+    let n = centerline.len();
+    let mut stations: Vec<(Vec3, Vec3)> = Vec::new(); // (centre, right)
     let mut dash_flags: Vec<bool> = Vec::new();
     let mut cumulative = 0.0_f32;
-    let mut prev_centre: Option<Vec3> = None;
     const DASH_LEN: f32 = 12.0;
-
-    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z);
-    let cr = |p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32| -> Vec3 {
-        let t2 = t * t;
-        let t3 = t2 * t;
-        0.5 * ((2.0 * p1)
-            + (-p0 + p2) * t
-            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
-    };
-
-    for i in 0..num_wp {
-        let p0 = flat(waypoints[(i + num_wp - 1) % num_wp]);
-        let p1 = flat(waypoints[i]);
-        let p2 = flat(waypoints[(i + 1) % num_wp]);
-        let p3 = flat(waypoints[(i + 2) % num_wp]);
-        let seg_len = p1.distance(p2).max(0.001);
-        let steps = (seg_len / 6.0).ceil().max(2.0) as usize;
-        for s in 0..steps {
-            let t = s as f32 / steps as f32;
-            let centre = cr(p0, p1, p2, p3, t);
-            let ahead = cr(p0, p1, p2, p3, t + 0.02);
-            let dir = flat(ahead - centre).normalize_or_zero();
-            let right = Vec3::Y.cross(dir).normalize_or_zero();
-
-            if let Some(prev) = prev_centre {
-                cumulative += centre.distance(prev);
-            }
-            prev_centre = Some(centre);
-            stations.push((centre, right));
-            dash_flags.push(((cumulative / DASH_LEN) as i32) % 2 == 0);
-        }
+    for i in 0..n {
+        let centre = centerline[i];
+        let next = centerline[(i + 1) % n];
+        let prev = centerline[(i + n - 1) % n];
+        let dir = Vec3::new(next.x - prev.x, 0.0, next.z - prev.z).normalize_or_zero();
+        let right = Vec3::Y.cross(dir).normalize_or_zero();
+        cumulative += centre.distance(prev);
+        stations.push((centre, right));
+        dash_flags.push(((cumulative / DASH_LEN) as i32) % 2 == 0);
     }
     let num_stations = stations.len();
 
