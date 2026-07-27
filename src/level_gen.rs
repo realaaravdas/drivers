@@ -34,18 +34,19 @@ pub fn get_terrain_height(x: f32, z: f32) -> f32 {
     let s = x + z;
     let d = x - z;
 
-    // Large hills — bigger, more dramatic rolling terrain
-    let large = (s / 580.0).sin() * 38.0
-              + (d / 630.0).cos() * 34.0;
+    // City-scale rolling hills — gentle enough for a coherent street grid (think
+    // San Francisco), but with real elevation change for variety.
+    let large = (s / 620.0).sin() * 18.0
+              + (d / 660.0).cos() * 16.0;
     // Medium hills — neighbourhood scale
-    let medium = (s / 195.0).sin() * 15.0
-               + (d / 175.0).cos() * 13.0
-               + (s / 115.0).cos() * 6.0;
+    let medium = (s / 210.0).sin() * 8.0
+               + (d / 185.0).cos() * 7.0
+               + (s / 120.0).cos() * 4.0;
     // Fine surface texture
-    let small = (d / 78.0).cos() * 3.5 + (s / 88.0).sin() * 3.0;
+    let small = (d / 82.0).cos() * 2.5 + (s / 92.0).sin() * 2.0;
 
     // Baseline keeps most terrain positive; .max(0) creates flat valleys
-    (large + medium + small + 38.0).max(0.0)
+    (large + medium + small + 22.0).max(0.0)
 }
 
 /// A small repeating texture of office windows (lit/unlit) so buildings read as
@@ -101,32 +102,26 @@ fn generate_level(
     let total_size = (num_rows - 1) as f32 * grid_size;
     let half_size = total_size / 2.0;
 
-    // 1. Generate waypoints FIRST — a smooth, organic closed loop. The radius is
-    // modulated by a few *integer* harmonics of the loop angle, which keeps it
-    // perfectly periodic (no kink at the seam) while giving flowing, realistic
-    // curves and straights instead of a jagged polygon.
-    let num_points = rng.random_range(30..46);
-    let base_radius = rng.random_range(520.0..760.0);
-    let tau = std::f32::consts::TAU;
-    let (a1, p1) = (rng.random_range(0.08..0.22), rng.random_range(0.0..tau));
-    let (a2, p2) = (rng.random_range(0.05..0.16), rng.random_range(0.0..tau));
-    let (a3, p3) = (rng.random_range(0.03..0.10), rng.random_range(0.0..tau));
-
+    // 1. Generate waypoints FIRST. Same jagged, varied layout as the classic track
+    // (random radius per point, snapped to the 40 m city-block grid), which the
+    // Catmull-Rom road builder then rounds into flowing curves — "the old track,
+    // but with the sharp corners smoothed."
+    let num_points = rng.random_range(24..40);
     let mut waypoints: Vec<Vec3> = Vec::new();
     for i in 0..num_points {
-        let angle = (i as f32 / num_points as f32) * tau;
-        let r = base_radius
-            * (1.0
-                + a1 * (angle + p1).sin()
-                + a2 * (2.0 * angle + p2).sin()
-                + a3 * (3.0 * angle + p3).sin());
+        let angle = (i as f32 / num_points as f32) * std::f32::consts::TAU;
+        let radius = rng.random_range(12.0..24.0);
 
-        let x = angle.cos() * r;
-        let z = angle.sin() * r;
+        let x = (angle.cos() * radius).round() * 40.0;
+        let z = (angle.sin() * radius).round() * 40.0;
 
         let mut pos = Vec3::new(x, 0.0, z);
         pos.y = get_terrain_height(pos.x, pos.z);
-        waypoints.push(pos);
+
+        // Skip duplicates/too-close points so the spline stays well behaved.
+        if waypoints.is_empty() || waypoints.last().unwrap().distance(pos) > 20.0 {
+            waypoints.push(pos);
+        }
     }
 
     level_data.waypoints = waypoints.clone();
@@ -157,11 +152,21 @@ fn generate_level(
             normals.push([0.0, 1.0, 0.0]); // We'll compute real normals later
             uvs.push([x as f32 / num_rows as f32, z as f32 / num_cols as f32]);
 
-            // Grass everywhere — the road is a separate high-resolution ribbon mesh
-            // (see `build_road_mesh`) so its lines stay crisp regardless of this
-            // coarse 8 m terrain grid. A subtle tint breaks up the flatness.
-            let tint = 0.03 * ((px * 0.03).sin() * (pz * 0.037).cos());
-            colors.push([0.17 + tint, 0.42 + tint, 0.10, 1.0]);
+            // City ground: a grid of streets (dark asphalt) between grass blocks,
+            // baked into the terrain so it drapes over the hills with zero extra
+            // meshes. Streets run on the 40 m block grid, offset 20 m so building
+            // blocks sit between them. The main racing road is a crisp ribbon on top.
+            let mx = (px - 20.0).rem_euclid(40.0);
+            let mz = (pz - 20.0).rem_euclid(40.0);
+            let dist_street = mx.min(40.0 - mx).min(mz.min(40.0 - mz));
+            if dist_street < 7.5 {
+                colors.push([0.12, 0.12, 0.14, 1.0]); // asphalt street
+            } else if dist_street < 9.5 {
+                colors.push([0.55, 0.55, 0.58, 1.0]); // pale sidewalk band
+            } else {
+                let tint = 0.03 * ((px * 0.03).sin() * (pz * 0.037).cos());
+                colors.push([0.17 + tint, 0.42 + tint, 0.10, 1.0]); // grass block
+            }
         }
     }
 
@@ -255,7 +260,10 @@ fn generate_level(
         })
         .collect();
 
-    let footprint = BLOCK_SIZE - ROAD_WIDTH; // 24 m
+    // Footprint 16 m within the 40 m block leaves a sidewalk/tree strip between
+    // the building and the 15 m streets baked into the ground.
+    let footprint = 16.0_f32;
+    let _ = ROAD_WIDTH;
     let building_grid = 30; // 60x60 grid
     for x in -building_grid..=building_grid {
         for z in -building_grid..=building_grid {
@@ -336,18 +344,18 @@ fn build_road_mesh(waypoints: &[Vec3]) -> Mesh {
 
     // (lateral offset from centre, colour, is_centre_line). Boundaries are
     // duplicated (same offset, different colour) so each band is a solid colour.
-    // Half-width 12 → a wide 24 m road.
+    // Half-width 10 → a 20 m road that stays clean through tight curves.
     let cross: [(f32, [f32; 3], bool); 10] = [
-        (-12.0, white, false),
-        (-10.5, white, false),
-        (-10.5, asphalt, false),
+        (-10.0, white, false),
+        (-8.5, white, false),
+        (-8.5, asphalt, false),
         (-1.2, asphalt, false),
         (-1.2, yellow, true),
         (1.2, yellow, true),
         (1.2, asphalt, false),
-        (10.5, asphalt, false),
-        (10.5, white, false),
-        (12.0, white, false),
+        (8.5, asphalt, false),
+        (8.5, white, false),
+        (10.0, white, false),
     ];
 
     // Sample a Catmull-Rom spline THROUGH the waypoints so the road flows in smooth
