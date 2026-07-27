@@ -433,7 +433,11 @@ pub fn sample_road_centerline(waypoints: &[Vec3]) -> Vec<Vec3> {
         let steps = (seg_len / 6.0).ceil().max(2.0) as usize;
         for s in 0..steps {
             let t = s as f32 / steps as f32;
-            out.push(cr(p0, p1, p2, p3, t));
+            // Blend the smooth spline toward the straight chord so corners stay
+            // crisp and turns feel sharp, while straights/gentle bends stay smooth.
+            let smooth = cr(p0, p1, p2, p3, t);
+            let chord = p1.lerp(p2, t);
+            out.push(smooth.lerp(chord, 0.4));
         }
     }
     out
@@ -515,7 +519,7 @@ fn build_avenue_mesh(centerline: &[Vec3]) -> Mesh {
         let dash_on = ((cumulative / 10.0) as i32) % 2 == 0;
         for (offset, base_color, is_centre) in cross.iter() {
             let p = centre + right * *offset;
-            let y = get_terrain_height(p.x, p.z) + 0.12;
+            let y = get_terrain_height(p.x, p.z) + 0.05;
             positions.push([p.x, y, p.z]);
             normals.push([0.0, 1.0, 0.0]);
             uvs.push([0.0, 0.0]);
@@ -595,9 +599,9 @@ fn build_road_mesh(centerline: &[Vec3]) -> Mesh {
         let dash_on = dash_flags[si];
         for (offset, base_color, is_centre) in cross.iter() {
             let p = *centre + *right * *offset;
-            // Racing road sits clearly above avenues so it cleanly overlays them at
-            // crossings instead of z-fighting.
-            let y = get_terrain_height(p.x, p.z) + 0.5;
+            // Hugs the ground (just enough above avenues to overlay them cleanly at
+            // crossings without z-fighting).
+            let y = get_terrain_height(p.x, p.z) + 0.14;
             positions.push([p.x, y, p.z]);
             normals.push([0.0, 1.0, 0.0]);
             uvs.push([0.0, 0.0]);

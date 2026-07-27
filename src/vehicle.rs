@@ -406,6 +406,24 @@ const AIR_MARGIN: f32 = 1.2; // above this much clearance the car is "airborne"
 const ALIGN_RATE: f32 = 12.0; // how fast the chassis rotates to match the ground (1/s)
 const AIR_ALIGN_TORQUE: f32 = 200.0; // gentler upright spring while airborne
 
+/// Starting-grid slot: staggered two-wide rows lined up behind the start line,
+/// all facing the direction of travel (toward the first turn). Index 0 is pole.
+pub fn grid_slot(waypoints: &[Vec3], index: usize) -> Transform {
+    let a = waypoints[0];
+    let b = waypoints[1 % waypoints.len()];
+    let mut dir = Vec3::new(b.x - a.x, 0.0, b.z - a.z).normalize_or_zero();
+    if dir.length_squared() < 0.001 {
+        dir = Vec3::Z;
+    }
+    let right = Vec3::Y.cross(dir).normalize_or_zero();
+    let row = (index / 2) as f32;
+    let col = if index % 2 == 0 { -1.0 } else { 1.0 };
+    // Whole grid sits behind the start line so cars accelerate across it.
+    let mut pos = a - dir * (row * 8.0 + 6.0) + right * (col * 3.5);
+    pos.y = crate::level_gen::get_terrain_height(pos.x, pos.z) + 3.0;
+    Transform::from_translation(pos).looking_to(dir, Vec3::Y)
+}
+
 // --- Realistic steering ----------------------------------------------------
 /// Angular damping on the car body — kept in sync with the `Damping` component so
 /// we can cancel it when driving the yaw rate directly (see `steering_yaw_rate`).
@@ -507,7 +525,9 @@ fn spawn_player_car(
     level_data: Res<LevelData>,
     difficulty: Res<GameDifficulty>,
 ) {
-    let start_pos = level_data.start_pos;
+    // Pole position on the starting grid, facing down the track.
+    let spawn_tf = grid_slot(&level_data.waypoints, 0);
+    let start_pos = spawn_tf.translation;
 
     // Shared tail-light material (brightened on braking by `update_brake_lights`).
     let tail_mat = materials.add(StandardMaterial {
@@ -521,7 +541,7 @@ fn spawn_player_car(
         .spawn((
             Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 4.0))),
             MeshMaterial3d(materials.add(Color::srgb(0.9, 0.1, 0.1))),
-            Transform::from_translation(start_pos),
+            spawn_tf,
             RigidBody::Dynamic,
             Collider::round_cuboid(0.9, 0.4, 1.9, 0.1),
             Velocity::default(),

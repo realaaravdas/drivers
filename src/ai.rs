@@ -41,20 +41,12 @@ fn spawn_ai_cars(
     level_data: Res<LevelData>,
     difficulty: Res<GameDifficulty>,
 ) {
-    let start_pos = level_data.start_pos;
     let mut rng = rand::rng();
 
-    // Spawn 12 AI cars with an offset
+    // Spawn 12 AI cars in the starting grid behind the player (index 0 = pole).
     for i in 1..=12 {
-        let row = (i + 1) / 2;
-        let col = if i % 2 == 0 { 1.0 } else { -1.0 };
-        let offset = Vec3::new(col * 4.0, 0.0, row as f32 * 8.0);
-        let mut spawn_pos = start_pos + offset;
-
-        let x = spawn_pos.x;
-        let z = spawn_pos.z;
-        let surface_y = crate::level_gen::get_terrain_height(x, z);
-        spawn_pos.y = surface_y + 5.0;
+        let spawn_tf = crate::vehicle::grid_slot(&level_data.waypoints, i);
+        let spawn_pos = spawn_tf.translation;
 
         // Difficulty-driven pace: every car's raw spec is the difficulty mean with
         // a small random spread, so there are no fixed "tiers". Even the quickest
@@ -78,7 +70,7 @@ fn spawn_ai_cars(
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 4.0))),
             MeshMaterial3d(materials.add(Color::srgb(0.2, 0.8, 0.2))),
-            Transform::from_translation(spawn_pos),
+            spawn_tf,
             RigidBody::Dynamic,
             Collider::round_cuboid(0.9, 0.4, 1.9, 0.1),
             Velocity::default(),
@@ -178,7 +170,7 @@ fn ai_update(
                 nearest = idx;
             }
         }
-        let look = 4 + (velocity.linear.length() * 0.14) as usize;
+        let look = 3 + (velocity.linear.length() * 0.1) as usize;
         let aim = cl[(nearest + look) % cl.len().max(1)];
 
         // Personal racing line: nudge the aim point sideways a little.
@@ -207,6 +199,17 @@ fn ai_update(
 
         let mut target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
 
+        // Actively return to the road centre: steer toward the nearest centreline
+        // point in proportion to how far off it we are. This is what makes them
+        // hug the racing line instead of drifting onto the grass.
+        let center = cl[nearest];
+        let lateral = right.dot(Vec3::new(
+            center.x - transform.translation.x,
+            0.0,
+            center.z - transform.translation.z,
+        ));
+        target_steering = (target_steering - lateral * 0.06).clamp(-1.0, 1.0);
+
         // Speed management by UPCOMING curvature so cars actually slow for corners
         // and don't run wide off the road. `curve` is 0 on a straight, larger in a
         // tight bend. Aggressive drivers carry more speed; cautious ones slow more.
@@ -215,7 +218,7 @@ fn ai_update(
         let d_far = (cl[(nearest + 16) % cn] - cl[(nearest + 11) % cn]).normalize_or_zero();
         let curve = (1.0 - d_near.dot(d_far).clamp(-1.0, 1.0)).max(0.0);
         let speed = velocity.linear.length();
-        let corner_speed = (20.0 + 42.0 * ai.aggression) / (1.0 + curve * 4.0 * ai.caution);
+        let corner_speed = (16.0 + 34.0 * ai.aggression) / (1.0 + curve * 5.0 * ai.caution);
         let mut throttle = if speed < corner_speed { 1.0 } else { 0.0 };
         let mut braking = speed > corner_speed * 1.15;
         let mut drifting = curve > 0.5 && speed > 16.0 && ai.aggression > 1.05;
@@ -275,8 +278,8 @@ fn ai_update(
             throttle = 0.0;
         }
 
-        // Smooth steering
-        vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.1;
+        // Smooth steering (snappier than before so they react through corners).
+        vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.22;
 
         // Visual wheel steering
         if let Some(children) = children {
