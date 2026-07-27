@@ -142,8 +142,9 @@ fn ai_update(
 
         let target_wp = level_data.waypoints[tracker.next_waypoint];
 
-        // Lap and Waypoint logic
-        if transform.translation.distance(target_wp) < 15.0 {
+        // Lap and Waypoint logic. Generous radius so cars still register the gate
+        // even when the racing line clips the apex on a sharp curve.
+        if transform.translation.distance(target_wp) < 24.0 {
             tracker.next_waypoint += 1;
             if tracker.next_waypoint >= level_data.waypoints.len() {
                 tracker.next_waypoint = 0;
@@ -171,11 +172,16 @@ fn ai_update(
                 nearest = idx;
             }
         }
-        // Longer look-ahead = smooth pure-pursuit (no weaving). Aiming at a point
-        // well down the road naturally returns the car to the line without an extra
-        // correction loop fighting it.
-        let look = 7 + (velocity.linear.length() * 0.18) as usize;
-        let aim = cl[(nearest + look) % cl.len().max(1)];
+        // Curvature right where the car is, so the look-ahead can shorten in bends.
+        let cn = cl.len().max(1);
+        let dn = (cl[(nearest + 3) % cn] - cl[(nearest + 1) % cn]).normalize_or_zero();
+        let df = (cl[(nearest + 9) % cn] - cl[(nearest + 7) % cn]).normalize_or_zero();
+        let curve = (1.0 - dn.dot(df).clamp(-1.0, 1.0)).max(0.0);
+
+        // Pure-pursuit look-ahead: long on straights (smooth, no weave), short in
+        // corners (hugs the curve instead of cutting the chord).
+        let look = ((5.0 + velocity.linear.length() * 0.12) / (1.0 + curve * 2.0)).max(2.0) as usize;
+        let aim = cl[(nearest + look) % cn];
 
         // Personal racing line: nudge the aim point sideways a little.
         let mut target_pos = aim + right * ai.line_bias;
@@ -202,13 +208,9 @@ fn ai_update(
         let to_target = (target_pos - transform.translation).normalize_or_zero();
         let mut target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
 
-        // Speed management by curvature — measured only a short distance ahead so
-        // cars brake JUST before a corner, not halfway down the preceding straight.
-        // Higher base speed + gentler penalty so they keep good pace.
-        let cn = cl.len().max(1);
-        let d_near = (cl[(nearest + 3) % cn] - cl[(nearest + 1) % cn]).normalize_or_zero();
-        let d_far = (cl[(nearest + 9) % cn] - cl[(nearest + 7) % cn]).normalize_or_zero();
-        let curve = (1.0 - d_near.dot(d_far).clamp(-1.0, 1.0)).max(0.0);
+        // Speed management by curvature (measured just ahead, above) so cars brake
+        // JUST before a corner, not halfway down the preceding straight. Higher base
+        // speed + gentler penalty so they keep good pace.
         let speed = velocity.linear.length();
         let corner_speed = (28.0 + 40.0 * ai.aggression) / (1.0 + curve * 3.0 * ai.caution);
         // Coast (not full stop) when a touch over the limit; only brake hard when

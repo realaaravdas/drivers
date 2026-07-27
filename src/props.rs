@@ -59,7 +59,7 @@ pub fn populate_world(
     spawn_signals(commands, meshes, materials, waypoints, road_centerline, &mut rng);
     spawn_npc_cars(commands, meshes, materials, avenues, &mut rng);
     spawn_lakes_and_bridge(commands, meshes, materials, road_centerline, &mut rng);
-    spawn_tunnel(commands, meshes, materials, road_centerline);
+    // Tunnels removed.
 }
 
 // --- Trees -----------------------------------------------------------------
@@ -435,8 +435,9 @@ fn spawn_lakes_and_bridge(
     }
 }
 
-// --- Giant drivable tunnel on the circuit ----------------------------------
+// --- Giant drivable tunnel on the circuit (currently unused) ----------------
 
+#[allow(dead_code)]
 fn spawn_tunnel(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,

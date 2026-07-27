@@ -50,19 +50,19 @@ pub fn get_terrain_height(x: f32, z: f32) -> f32 {
     let s = x + z;
     let d = x - z;
 
-    // Big, dramatic city hills (think San Francisco cranked up) — steep elevation
-    // for variety, while the long wavelengths keep slopes drivable and smooth.
-    let large = (s / 620.0).sin() * 40.0
-              + (d / 660.0).cos() * 34.0;
+    // Huge, dramatic hills — tall peaks and deep valleys. The long wavelengths keep
+    // the actual grades drivable and smooth despite the big elevation swings.
+    let large = (s / 640.0).sin() * 62.0
+              + (d / 680.0).cos() * 54.0;
     // Medium hills — neighbourhood scale
-    let medium = (s / 210.0).sin() * 15.0
-               + (d / 185.0).cos() * 12.0
-               + (s / 120.0).cos() * 6.0;
+    let medium = (s / 220.0).sin() * 22.0
+               + (d / 190.0).cos() * 18.0
+               + (s / 120.0).cos() * 9.0;
     // Fine surface texture
-    let small = (d / 82.0).cos() * 3.0 + (s / 92.0).sin() * 2.5;
+    let small = (d / 82.0).cos() * 3.5 + (s / 92.0).sin() * 3.0;
 
     // Baseline keeps most terrain positive; .max(0) creates flat valleys
-    (large + medium + small + 40.0).max(0.0)
+    (large + medium + small + 62.0).max(0.0)
 }
 
 /// A small repeating texture of office windows (lit/unlit) so buildings read as

@@ -424,15 +424,16 @@ pub fn grid_slot(waypoints: &[Vec3], index: usize) -> Transform {
     Transform::from_translation(pos).looking_to(dir, Vec3::Y)
 }
 
-// Collision groups: cars collide with the static WORLD (buildings) but NOT with
-// each other, so they never ram/pile up, and AI feeler-rays (filtered to WORLD)
-// ignore other cars — which is what stops the constant swerving and slow-downs.
+// Collision groups. Cars physically collide with the world (buildings) AND with
+// each other (real bumping/contact). AI feeler-rays are separately filtered to
+// only WORLD, so their steering still ignores other cars (no swerving/braking for
+// them) even though the bodies collide.
 pub const GROUP_WORLD: Group = Group::GROUP_1;
 pub const GROUP_CAR: Group = Group::GROUP_2;
 
-/// Collision groups for a car: member of CAR, collides only with WORLD.
+/// Collision groups for a car: member of CAR, collides with WORLD and other CARs.
 pub fn car_groups() -> CollisionGroups {
-    CollisionGroups::new(GROUP_CAR, GROUP_WORLD)
+    CollisionGroups::new(GROUP_CAR, GROUP_WORLD | GROUP_CAR)
 }
 
 // --- Realistic steering ----------------------------------------------------
@@ -741,12 +742,7 @@ fn vehicle_update(
                     let target_wp = level_data.waypoints[tracker.next_waypoint];
                     let dist = transform.translation.distance(target_wp);
 
-                    if dist < 40.0 {
-                        // Change color to yellow when approaching
-                        // (Gate logic will be in a separate system or we query children here)
-                    }
-
-                    if dist < 15.0 {
+                    if dist < 24.0 {
                         tracker.next_waypoint += 1;
                         if tracker.next_waypoint >= level_data.waypoints.len() {
                             tracker.next_waypoint = 0;
