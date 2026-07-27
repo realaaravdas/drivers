@@ -171,7 +171,10 @@ fn ai_update(
                 nearest = idx;
             }
         }
-        let look = 3 + (velocity.linear.length() * 0.1) as usize;
+        // Longer look-ahead = smooth pure-pursuit (no weaving). Aiming at a point
+        // well down the road naturally returns the car to the line without an extra
+        // correction loop fighting it.
+        let look = 7 + (velocity.linear.length() * 0.18) as usize;
         let aim = cl[(nearest + look) % cl.len().max(1)];
 
         // Personal racing line: nudge the aim point sideways a little.
@@ -197,32 +200,22 @@ fn ai_update(
         }
 
         let to_target = (target_pos - transform.translation).normalize_or_zero();
-
         let mut target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
 
-        // Actively return to the road centre: steer toward the nearest centreline
-        // point in proportion to how far off it we are. This is what makes them
-        // hug the racing line instead of drifting onto the grass.
-        let center = cl[nearest];
-        let lateral = right.dot(Vec3::new(
-            center.x - transform.translation.x,
-            0.0,
-            center.z - transform.translation.z,
-        ));
-        target_steering = (target_steering - lateral * 0.06).clamp(-1.0, 1.0);
-
-        // Speed management by UPCOMING curvature so cars actually slow for corners
-        // and don't run wide off the road. `curve` is 0 on a straight, larger in a
-        // tight bend. Aggressive drivers carry more speed; cautious ones slow more.
+        // Speed management by curvature — measured only a short distance ahead so
+        // cars brake JUST before a corner, not halfway down the preceding straight.
+        // Higher base speed + gentler penalty so they keep good pace.
         let cn = cl.len().max(1);
-        let d_near = (cl[(nearest + 4) % cn] - cl[(nearest + 2) % cn]).normalize_or_zero();
-        let d_far = (cl[(nearest + 16) % cn] - cl[(nearest + 11) % cn]).normalize_or_zero();
+        let d_near = (cl[(nearest + 3) % cn] - cl[(nearest + 1) % cn]).normalize_or_zero();
+        let d_far = (cl[(nearest + 9) % cn] - cl[(nearest + 7) % cn]).normalize_or_zero();
         let curve = (1.0 - d_near.dot(d_far).clamp(-1.0, 1.0)).max(0.0);
         let speed = velocity.linear.length();
-        let corner_speed = (16.0 + 34.0 * ai.aggression) / (1.0 + curve * 5.0 * ai.caution);
-        let mut throttle = if speed < corner_speed { 1.0 } else { 0.0 };
-        let mut braking = speed > corner_speed * 1.15;
-        let mut drifting = curve > 0.5 && speed > 16.0 && ai.aggression > 1.05;
+        let corner_speed = (28.0 + 40.0 * ai.aggression) / (1.0 + curve * 3.0 * ai.caution);
+        // Coast (not full stop) when a touch over the limit; only brake hard when
+        // well over it — avoids the dramatic slow-downs.
+        let mut throttle = if speed < corner_speed { 1.0 } else { 0.3 };
+        let mut braking = speed > corner_speed * 1.3;
+        let mut drifting = curve > 0.6 && speed > 18.0 && ai.aggression > 1.05;
 
         // Obstacle avoidance: feeler rays detect buildings and other cars ahead
         // (terrain has no collider, so rays only hit real obstacles). We steer away
@@ -241,9 +234,9 @@ fn ai_update(
             let (dl, dr, dc) = (ray(left_dir), ray(right_dir), ray(forward));
             // avoid > 0 → obstacle nearer on the right → steer left (positive), and vice versa.
             let avoid = (1.0 - dr / feel) - (1.0 - dl / feel);
-            target_steering = (target_steering + avoid * 2.2).clamp(-1.0, 1.0);
+            target_steering = (target_steering + avoid * 1.3).clamp(-1.0, 1.0);
             if dc < feel * 0.55 {
-                throttle *= 0.4;
+                throttle *= 0.5;
             }
         }
 
@@ -264,9 +257,9 @@ fn ai_update(
             ai.mistake_timer -= dt;
             target_steering = (target_steering + ai.mistake_steer).clamp(-1.0, 1.0);
             throttle *= 0.8;
-        } else if rand::random::<f32>() < (1.0 - ai.consistency) * 0.004 {
-            ai.mistake_timer = rng.random_range(0.4..1.1);
-            ai.mistake_steer = rng.random_range(-0.45..0.45);
+        } else if rand::random::<f32>() < (1.0 - ai.consistency) * 0.0025 {
+            ai.mistake_timer = rng.random_range(0.3..0.8);
+            ai.mistake_steer = rng.random_range(-0.2..0.2);
         }
 
         if ai.reversing_time > 0.0 {
@@ -283,8 +276,8 @@ fn ai_update(
             throttle = 0.0;
         }
 
-        // Smooth steering (snappier than before so they react through corners).
-        vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.22;
+        // Smooth steering — gentle enough to avoid overshoot/weaving.
+        vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.16;
 
         // Visual wheel steering
         if let Some(children) = children {
