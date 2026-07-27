@@ -115,6 +115,7 @@ fn spawn_ai_cars(
                 RaceEntity,
                 crate::vehicle::TireMarks { last_mark: spawn_pos },
                 crate::vehicle::CarLights { tail_mat: tail_mat.clone() },
+                crate::vehicle::car_groups(),
             ),
         )).with_children(|parent| {
             crate::vehicle::build_car_visuals(parent, &mut meshes, &mut materials, Color::srgb(0.2, 0.8, 0.2), tail_mat.clone());
@@ -232,7 +233,11 @@ fn ai_update(
             let origin = transform.translation + forward * 2.6 + Vec3::Y * 0.2;
             let left_dir = (forward - right * 0.6).normalize_or_zero();
             let right_dir = (forward + right * 0.6).normalize_or_zero();
-            let ray = |dir: Vec3| ctx.cast_ray(origin, dir, feel, false, QueryFilter::default()).map(|(_, t)| t).unwrap_or(feel);
+            // Only sense the static WORLD (buildings) — ignore other cars, so they
+            // don't endlessly swerve around and brake for each other.
+            let filter = QueryFilter::default()
+                .groups(CollisionGroups::new(crate::vehicle::GROUP_CAR, crate::vehicle::GROUP_WORLD));
+            let ray = |dir: Vec3| ctx.cast_ray(origin, dir, feel, false, filter).map(|(_, t)| t).unwrap_or(feel);
             let (dl, dr, dc) = (ray(left_dir), ray(right_dir), ray(forward));
             // avoid > 0 → obstacle nearer on the right → steer left (positive), and vice versa.
             let avoid = (1.0 - dr / feel) - (1.0 - dl / feel);

@@ -50,19 +50,19 @@ pub fn get_terrain_height(x: f32, z: f32) -> f32 {
     let s = x + z;
     let d = x - z;
 
-    // City-scale rolling hills — gentle enough for a coherent street grid (think
-    // San Francisco), but with real elevation change for variety.
-    let large = (s / 620.0).sin() * 18.0
-              + (d / 660.0).cos() * 16.0;
+    // Big, dramatic city hills (think San Francisco cranked up) — steep elevation
+    // for variety, while the long wavelengths keep slopes drivable and smooth.
+    let large = (s / 620.0).sin() * 40.0
+              + (d / 660.0).cos() * 34.0;
     // Medium hills — neighbourhood scale
-    let medium = (s / 210.0).sin() * 8.0
-               + (d / 185.0).cos() * 7.0
-               + (s / 120.0).cos() * 4.0;
+    let medium = (s / 210.0).sin() * 15.0
+               + (d / 185.0).cos() * 12.0
+               + (s / 120.0).cos() * 6.0;
     // Fine surface texture
-    let small = (d / 82.0).cos() * 2.5 + (s / 92.0).sin() * 2.0;
+    let small = (d / 82.0).cos() * 3.0 + (s / 92.0).sin() * 2.5;
 
     // Baseline keeps most terrain positive; .max(0) creates flat valleys
-    (large + medium + small + 22.0).max(0.0)
+    (large + medium + small + 40.0).max(0.0)
 }
 
 /// A small repeating texture of office windows (lit/unlit) so buildings read as
@@ -100,6 +100,48 @@ fn create_window_texture() -> Image {
         ..default()
     });
     image
+}
+
+/// Shared tree meshes/materials so we can plant thousands cheaply, with variety.
+struct TreeKit {
+    trunk: Handle<Mesh>,
+    foliage: [Handle<Mesh>; 3],
+    trunk_mat: Handle<StandardMaterial>,
+    greens: [Handle<StandardMaterial>; 4],
+}
+
+/// Plants one random-species, random-size tree draped on the terrain at `pos.xz`.
+fn plant_tree(commands: &mut Commands, kit: &TreeKit, pos: Vec3, rng: &mut impl RngExt) {
+    let ty = get_terrain_height(pos.x, pos.z);
+    let scale = rng.random_range(0.7..1.9);
+    let kind = rng.random_range(0..3);
+    let green = kit.greens[rng.random_range(0..kit.greens.len())].clone();
+    let fy = if kind == 1 { 5.5 } else { 8.0 }; // round canopy sits a bit lower
+    commands.spawn((
+        Mesh3d(kit.trunk.clone()),
+        MeshMaterial3d(kit.trunk_mat.clone()),
+        Transform::from_xyz(pos.x, ty + 2.5 * scale, pos.z).with_scale(Vec3::splat(scale)),
+        RaceEntity,
+    ));
+    commands.spawn((
+        Mesh3d(kit.foliage[kind].clone()),
+        MeshMaterial3d(green),
+        Transform::from_xyz(pos.x, ty + fy * scale, pos.z).with_scale(Vec3::splat(scale)),
+        RaceEntity,
+    ));
+}
+
+/// A cuboid whose UVs are tiled so the shared window texture reads as ~4 m windows.
+fn windowed_cuboid(fx: f32, h: f32, fz: f32) -> Mesh {
+    let mut m: Mesh = Cuboid::new(fx, h, fz).into();
+    if let Some(VertexAttributeValues::Float32x2(uvs)) = m.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
+        let (su, sv) = (fx / 4.0, h / 4.0);
+        for uv in uvs.iter_mut() {
+            uv[0] *= su;
+            uv[1] *= sv;
+        }
+    }
+    m
 }
 
 fn generate_level(
@@ -146,7 +188,9 @@ fn generate_level(
     // Dense racing-road centreline (shared by the road mesh, AI path-following and
     // obstruction clearing) and a varied network of side-street avenues.
     let road_centerline = sample_road_centerline(&waypoints);
-    let avenues = generate_avenues(&mut rng);
+    // Side-street avenues temporarily disabled (set back to generate_avenues(&mut rng)
+    // to restore). Buildings/props behave fine with an empty network.
+    let avenues: Vec<Vec<Vec3>> = Vec::new();
     level_data.road_centerline = road_centerline.clone();
     level_data.avenues = avenues.clone();
 
@@ -289,98 +333,146 @@ fn generate_level(
         })
         .collect();
 
-    // Park meshes (used for tree clusters in green blocks).
-    let trunk_mesh = meshes.add(Cylinder::new(0.35, 5.0));
-    let foliage_mesh = meshes.add(Cone { radius: 2.8, height: 7.0 });
-    let trunk_mat = materials.add(Color::srgb(0.32, 0.2, 0.1));
-    let park_foliage = materials.add(Color::srgb(0.14, 0.46, 0.13));
+    // Several tree species for variety.
+    let tree_kit = TreeKit {
+        trunk: meshes.add(Cylinder::new(0.35, 5.0)),
+        foliage: [
+            meshes.add(Cone { radius: 2.8, height: 8.0 }),  // 0: pine
+            meshes.add(Sphere::new(3.0)),                   // 1: round / oak
+            meshes.add(Cone { radius: 1.7, height: 10.5 }), // 2: tall cypress
+        ],
+        trunk_mat: materials.add(Color::srgb(0.32, 0.2, 0.1)),
+        greens: [
+            materials.add(Color::srgb(0.12, 0.42, 0.12)),
+            materials.add(Color::srgb(0.18, 0.5, 0.16)),
+            materials.add(Color::srgb(0.1, 0.34, 0.14)),
+            materials.add(Color::srgb(0.24, 0.56, 0.2)),
+        ],
+    };
 
-    // A handful of parks scattered through the city.
-    let parks: Vec<Vec2> = (0..7)
-        .map(|_| Vec2::new(rng.random_range(-700.0..700.0), rng.random_range(-700.0..700.0)))
+    // Rooftop detail materials.
+    let roof_mat = materials.add(Color::srgb(0.15, 0.15, 0.17));
+    let antenna_mesh = meshes.add(Cylinder::new(0.3, 12.0));
+
+    // Parks scattered through the city.
+    let parks: Vec<Vec2> = (0..8)
+        .map(|_| Vec2::new(rng.random_range(-800.0..800.0), rng.random_range(-800.0..800.0)))
         .collect();
-    let park_radius = 70.0;
+    let park_radius = 75.0;
 
     let building_grid = 28; // ~57x57 blocks
     let block = 40.0_f32;
+    let building_groups =
+        CollisionGroups::new(crate::vehicle::GROUP_WORLD, crate::vehicle::GROUP_CAR);
+
     for gx in -building_grid..=building_grid {
         for gz in -building_grid..=building_grid {
-            // Heavy jitter + a later random rotation break the regular grid into an
+            // Heavy jitter + a random rotation break the regular grid into an
             // organic, Amsterdam-ish tangle of blocks and alleys.
             let px = gx as f32 * block + rng.random_range(-11.0..11.0);
             let pz = gz as f32 * block + rng.random_range(-11.0..11.0);
 
-            // Keep the racing road and avenues completely clear.
+            // Keep the racing road (and avenues, if any) completely clear.
             if dist_to_road(px, pz) < 22.0 || dist_to_avenue(px, pz) < 14.0 {
                 continue;
             }
 
-            // Parks: no buildings, scatter a few trees instead.
-            if let Some(park) = parks.iter().find(|p| p.distance(Vec2::new(px, pz)) < park_radius) {
-                let _ = park;
-                for _ in 0..2 {
-                    let tx = px + rng.random_range(-14.0..14.0);
-                    let tz = pz + rng.random_range(-14.0..14.0);
-                    if dist_to_road(tx, tz) < 18.0 {
+            // Parks: green blocks with tree clusters.
+            if parks.iter().any(|p| p.distance(Vec2::new(px, pz)) < park_radius) {
+                for _ in 0..3 {
+                    let tx = px + rng.random_range(-16.0..16.0);
+                    let tz = pz + rng.random_range(-16.0..16.0);
+                    if dist_to_road(tx, tz) < 16.0 {
                         continue;
                     }
-                    let ty = get_terrain_height(tx, tz);
-                    let s = rng.random_range(0.8..1.6);
-                    commands.spawn((
-                        Mesh3d(trunk_mesh.clone()),
-                        MeshMaterial3d(trunk_mat.clone()),
-                        Transform::from_xyz(tx, ty + 2.5 * s, tz).with_scale(Vec3::splat(s)),
-                        RaceEntity,
-                    ));
-                    commands.spawn((
-                        Mesh3d(foliage_mesh.clone()),
-                        MeshMaterial3d(park_foliage.clone()),
-                        Transform::from_xyz(tx, ty + 8.0 * s, tz).with_scale(Vec3::splat(s)),
-                        RaceEntity,
-                    ));
+                    plant_tree(&mut commands, &tree_kit, Vec3::new(tx, 0.0, tz), &mut rng);
                 }
                 continue;
             }
 
-            // Some empty lots for variety.
-            if rng.random_range(0.0..1.0) < 0.1 {
+            // Empty lots: sometimes a tree instead of a building.
+            if rng.random_range(0.0..1.0) < 0.12 {
+                if rng.random_range(0.0..1.0) < 0.6 {
+                    plant_tree(&mut commands, &tree_kit, Vec3::new(px, 0.0, pz), &mut rng);
+                }
                 continue;
             }
 
-            // TALL city. Height rises steeply toward downtown (map centre) for a
-            // real skyline; even the outskirts are proper mid-rise buildings.
+            // TALL city. Height rises steeply toward downtown (map centre).
             let dist_center = (px * px + pz * pz).sqrt();
             let downtown = (1.0 - dist_center / 850.0).clamp(0.0, 1.0);
             let height =
-                rng.random_range(22.0..55.0) + downtown * downtown * rng.random_range(40.0..150.0);
-            // Rectangular footprints (row-house / block variety) + random rotation.
+                rng.random_range(24.0..60.0) + downtown * downtown * rng.random_range(50.0..170.0);
             let fx = rng.random_range(12.0..26.0);
             let fz = rng.random_range(12.0..26.0);
             let angle = rng.random_range(0.0..std::f32::consts::TAU);
+            let rot = Quat::from_rotation_y(angle);
             let pos_y = get_terrain_height(px, pz);
-
-            // Tile the window texture: ~4 m per window across and per floor.
-            let mut bmesh: Mesh = Cuboid::new(fx, height, fz).into();
-            let su = fx / 4.0;
-            let sv = height / 4.0;
-            if let Some(VertexAttributeValues::Float32x2(uvs)) =
-                bmesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
-            {
-                for uv in uvs.iter_mut() {
-                    uv[0] *= su;
-                    uv[1] *= sv;
-                }
-            }
-
             let mat = building_mats[rng.random_range(0..building_mats.len())].clone();
+
+            // Main body (windowed).
+            let base_y = pos_y + height / 2.0 - 5.0;
             commands.spawn((
-                Mesh3d(meshes.add(bmesh)),
-                MeshMaterial3d(mat),
-                Transform::from_xyz(px, pos_y + height / 2.0 - 5.0, pz)
-                    .with_rotation(Quat::from_rotation_y(angle)),
+                Mesh3d(meshes.add(windowed_cuboid(fx, height, fz))),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_xyz(px, base_y, pz).with_rotation(rot),
                 Collider::cuboid(fx / 2.0, height / 2.0, fz / 2.0),
+                building_groups,
                 RaceEntity,
             ));
+
+            // Rooftop design variety.
+            let top_y = pos_y + height - 5.0;
+            let arch = rng.random_range(0.0..1.0);
+            if arch < 0.3 {
+                // Setback storey.
+                let th = height * rng.random_range(0.2..0.45);
+                let (tfx, tfz) = (fx * 0.62, fz * 0.62);
+                commands.spawn((
+                    Mesh3d(meshes.add(windowed_cuboid(tfx, th, tfz))),
+                    MeshMaterial3d(mat.clone()),
+                    Transform::from_xyz(px, top_y + th / 2.0, pz).with_rotation(rot),
+                    RaceEntity,
+                ));
+            } else if arch < 0.52 {
+                // Rooftop mechanical block + antenna spire.
+                commands.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(fx * 0.45, 3.0, fz * 0.45))),
+                    MeshMaterial3d(roof_mat.clone()),
+                    Transform::from_xyz(px, top_y + 1.5, pz).with_rotation(rot),
+                    RaceEntity,
+                ));
+                commands.spawn((
+                    Mesh3d(antenna_mesh.clone()),
+                    MeshMaterial3d(roof_mat.clone()),
+                    Transform::from_xyz(px, top_y + 6.0, pz),
+                    RaceEntity,
+                ));
+            }
+        }
+    }
+
+    // Forests: scatter trees densely everywhere OUTSIDE the city core (hills,
+    // fields), clear of the racing road, so greenery is all over the map.
+    let city_edge = building_grid as f32 * block;
+    let mut ox = -1500.0_f32;
+    while ox < 1500.0 {
+        ox += rng.random_range(24.0..44.0);
+        let mut oz = -1500.0_f32;
+        while oz < 1500.0 {
+            oz += rng.random_range(24.0..44.0);
+            if ox.abs() < city_edge && oz.abs() < city_edge {
+                continue; // inside the built-up core
+            }
+            if dist_to_road(ox, oz) < 16.0 {
+                continue;
+            }
+            if rng.random_range(0.0..1.0) < 0.55 {
+                continue;
+            }
+            let jx = ox + rng.random_range(-10.0..10.0);
+            let jz = oz + rng.random_range(-10.0..10.0);
+            plant_tree(&mut commands, &tree_kit, Vec3::new(jx, 0.0, jz), &mut rng);
         }
     }
 
@@ -445,6 +537,7 @@ pub fn sample_road_centerline(waypoints: &[Vec3]) -> Vec<Vec3> {
 
 /// A varied network of straight side-street avenues (varied spacing + a couple of
 /// diagonals), each returned as a sampled centreline (xz, y=0).
+#[allow(dead_code)]
 fn generate_avenues(rng: &mut impl RngExt) -> Vec<Vec<Vec3>> {
     let mut avenues = Vec::new();
     let extent = 1300.0;
@@ -484,6 +577,7 @@ fn generate_avenues(rng: &mut impl RngExt) -> Vec<Vec<Vec3>> {
 
 /// Builds a plain draped asphalt avenue (open strip) with a dashed yellow centre
 /// line and white edges.
+#[allow(dead_code)]
 fn build_avenue_mesh(centerline: &[Vec3]) -> Mesh {
     let yellow = [0.9, 0.75, 0.0];
     let asphalt = [0.1, 0.1, 0.11];

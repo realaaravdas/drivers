@@ -424,6 +424,17 @@ pub fn grid_slot(waypoints: &[Vec3], index: usize) -> Transform {
     Transform::from_translation(pos).looking_to(dir, Vec3::Y)
 }
 
+// Collision groups: cars collide with the static WORLD (buildings) but NOT with
+// each other, so they never ram/pile up, and AI feeler-rays (filtered to WORLD)
+// ignore other cars — which is what stops the constant swerving and slow-downs.
+pub const GROUP_WORLD: Group = Group::GROUP_1;
+pub const GROUP_CAR: Group = Group::GROUP_2;
+
+/// Collision groups for a car: member of CAR, collides only with WORLD.
+pub fn car_groups() -> CollisionGroups {
+    CollisionGroups::new(GROUP_CAR, GROUP_WORLD)
+}
+
 // --- Realistic steering ----------------------------------------------------
 /// Angular damping on the car body — kept in sync with the `Damping` component so
 /// we can cancel it when driving the yaw rate directly (see `steering_yaw_rate`).
@@ -583,6 +594,7 @@ fn spawn_player_car(
                 CarLights {
                     tail_mat: tail_mat.clone(),
                 },
+                car_groups(),
             ),
         ))
         .with_children(|parent| {
