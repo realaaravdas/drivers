@@ -178,7 +178,7 @@ fn ai_update(
                 nearest = idx;
             }
         }
-        let look = 6 + (velocity.linear.length() * 0.2) as usize;
+        let look = 4 + (velocity.linear.length() * 0.14) as usize;
         let aim = cl[(nearest + look) % cl.len().max(1)];
 
         // Personal racing line: nudge the aim point sideways a little.
@@ -207,13 +207,18 @@ fn ai_update(
 
         let mut target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
 
-        // Throttle: full on straights; ease off into corners, less so for aggressive
-        // drivers (they carry more speed), more for cautious ones.
-        let forward_dot = forward.dot(to_target);
-        let mut throttle = 1.0_f32;
-        if forward_dot < 0.5 {
-            throttle = (0.55 + 0.25 * ai.aggression).min(1.0);
-        }
+        // Speed management by UPCOMING curvature so cars actually slow for corners
+        // and don't run wide off the road. `curve` is 0 on a straight, larger in a
+        // tight bend. Aggressive drivers carry more speed; cautious ones slow more.
+        let cn = cl.len().max(1);
+        let d_near = (cl[(nearest + 4) % cn] - cl[(nearest + 2) % cn]).normalize_or_zero();
+        let d_far = (cl[(nearest + 16) % cn] - cl[(nearest + 11) % cn]).normalize_or_zero();
+        let curve = (1.0 - d_near.dot(d_far).clamp(-1.0, 1.0)).max(0.0);
+        let speed = velocity.linear.length();
+        let corner_speed = (20.0 + 42.0 * ai.aggression) / (1.0 + curve * 4.0 * ai.caution);
+        let mut throttle = if speed < corner_speed { 1.0 } else { 0.0 };
+        let mut braking = speed > corner_speed * 1.15;
+        let mut drifting = curve > 0.5 && speed > 16.0 && ai.aggression > 1.05;
 
         // Obstacle avoidance: feeler rays detect buildings and other cars ahead
         // (terrain has no collider, so rays only hit real obstacles). We steer away
@@ -244,13 +249,6 @@ fn ai_update(
         } else {
             ai.stuck_time = 0.0;
         }
-
-        // Corner craft: cautious drivers brake earlier (at lower speed); aggressive
-        // drivers brake later and are the ones who commit to a handbrake drift.
-        let speed = velocity.linear.length();
-        let brake_speed = 24.0 / ai.caution;
-        let mut braking = forward_dot < 0.4 && speed > brake_speed;
-        let mut drifting = forward_dot < 0.12 && speed > 16.0 && ai.aggression > 1.0;
 
         // Occasional human mistakes — more likely for low-consistency drivers. This
         // is what lets a skilled player pick any of them off.

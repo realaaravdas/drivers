@@ -40,9 +40,6 @@ fn min_dist_to_points(x: f32, z: f32, points: &[Vec3]) -> f32 {
     best.sqrt()
 }
 
-const GRID_SIZE: i32 = 10;
-const BLOCK_SIZE: f32 = 40.0;
-const ROAD_WIDTH: f32 = 16.0;
 
 pub fn get_terrain_height(x: f32, z: f32) -> f32 {
     // Diagonal axes — symmetric under x↔z swap so heightfield and visual mesh
@@ -304,15 +301,17 @@ fn generate_level(
         .collect();
     let park_radius = 70.0;
 
-    let _ = ROAD_WIDTH;
-    let building_grid = 30; // 60x60 grid
+    let building_grid = 28; // ~57x57 blocks
+    let block = 40.0_f32;
     for gx in -building_grid..=building_grid {
         for gz in -building_grid..=building_grid {
-            let px = gx as f32 * BLOCK_SIZE;
-            let pz = gz as f32 * BLOCK_SIZE;
+            // Heavy jitter + a later random rotation break the regular grid into an
+            // organic, Amsterdam-ish tangle of blocks and alleys.
+            let px = gx as f32 * block + rng.random_range(-11.0..11.0);
+            let pz = gz as f32 * block + rng.random_range(-11.0..11.0);
 
             // Keep the racing road and avenues completely clear.
-            if dist_to_road(px, pz) < 22.0 || dist_to_avenue(px, pz) < 15.0 {
+            if dist_to_road(px, pz) < 22.0 || dist_to_avenue(px, pz) < 14.0 {
                 continue;
             }
 
@@ -344,28 +343,32 @@ fn generate_level(
             }
 
             // Some empty lots for variety.
-            if rng.random_range(0.0..1.0) < 0.12 {
+            if rng.random_range(0.0..1.0) < 0.1 {
                 continue;
             }
 
-            // Height rises toward downtown (map centre) for a real skyline.
+            // TALL city. Height rises steeply toward downtown (map centre) for a
+            // real skyline; even the outskirts are proper mid-rise buildings.
             let dist_center = (px * px + pz * pz).sqrt();
-            let downtown = (1.0 - dist_center / 750.0).clamp(0.0, 1.0);
+            let downtown = (1.0 - dist_center / 850.0).clamp(0.0, 1.0);
             let height =
-                rng.random_range(10.0..22.0) + downtown * downtown * rng.random_range(20.0..85.0);
-            let footprint = rng.random_range(14.0..22.0);
+                rng.random_range(22.0..55.0) + downtown * downtown * rng.random_range(40.0..150.0);
+            // Rectangular footprints (row-house / block variety) + random rotation.
+            let fx = rng.random_range(12.0..26.0);
+            let fz = rng.random_range(12.0..26.0);
+            let angle = rng.random_range(0.0..std::f32::consts::TAU);
             let pos_y = get_terrain_height(px, pz);
 
             // Tile the window texture: ~4 m per window across and per floor.
-            let mut bmesh: Mesh = Cuboid::new(footprint, height, footprint).into();
-            let sx = footprint / 4.0;
-            let sy = height / 4.0;
+            let mut bmesh: Mesh = Cuboid::new(fx, height, fz).into();
+            let su = fx / 4.0;
+            let sv = height / 4.0;
             if let Some(VertexAttributeValues::Float32x2(uvs)) =
                 bmesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
             {
                 for uv in uvs.iter_mut() {
-                    uv[0] *= sx;
-                    uv[1] *= sy;
+                    uv[0] *= su;
+                    uv[1] *= sv;
                 }
             }
 
@@ -373,8 +376,9 @@ fn generate_level(
             commands.spawn((
                 Mesh3d(meshes.add(bmesh)),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(px, pos_y + height / 2.0 - 5.0, pz),
-                Collider::cuboid(footprint / 2.0, height / 2.0, footprint / 2.0),
+                Transform::from_xyz(px, pos_y + height / 2.0 - 5.0, pz)
+                    .with_rotation(Quat::from_rotation_y(angle)),
+                Collider::cuboid(fx / 2.0, height / 2.0, fz / 2.0),
                 RaceEntity,
             ));
         }
@@ -511,7 +515,7 @@ fn build_avenue_mesh(centerline: &[Vec3]) -> Mesh {
         let dash_on = ((cumulative / 10.0) as i32) % 2 == 0;
         for (offset, base_color, is_centre) in cross.iter() {
             let p = centre + right * *offset;
-            let y = get_terrain_height(p.x, p.z) + 0.22;
+            let y = get_terrain_height(p.x, p.z) + 0.12;
             positions.push([p.x, y, p.z]);
             normals.push([0.0, 1.0, 0.0]);
             uvs.push([0.0, 0.0]);
@@ -591,7 +595,9 @@ fn build_road_mesh(centerline: &[Vec3]) -> Mesh {
         let dash_on = dash_flags[si];
         for (offset, base_color, is_centre) in cross.iter() {
             let p = *centre + *right * *offset;
-            let y = get_terrain_height(p.x, p.z) + 0.3;
+            // Racing road sits clearly above avenues so it cleanly overlays them at
+            // crossings instead of z-fighting.
+            let y = get_terrain_height(p.x, p.z) + 0.5;
             positions.push([p.x, y, p.z]);
             normals.push([0.0, 1.0, 0.0]);
             uvs.push([0.0, 0.0]);

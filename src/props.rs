@@ -92,9 +92,9 @@ fn spawn_trees(
         let mut i = 0;
         while i < av.len() {
             let c = av[i];
-            i += 2; // avenue samples are 16 m apart → a tree ~every 32 m
+            i += 4; // avenue samples are 16 m apart → a tree ~every 64 m
             for side in [-1.0_f32, 1.0] {
-                if rng.random_range(0.0..1.0) < 0.4 {
+                if rng.random_range(0.0..1.0) < 0.5 {
                     continue;
                 }
                 let base = c + right * (9.0 * side);
@@ -279,7 +279,7 @@ fn spawn_npc_cars(
         let dir = full / length;
         let right = Vec3::Y.cross(dir).normalize_or_zero();
 
-        for _ in 0..3 {
+        for _ in 0..4 {
             let lane = if rng.random_range(0.0..1.0) < 0.5 { -3.0 } else { 3.0 };
             let travel = if lane < 0.0 { dir } else { -dir };
             let origin = start + right * lane;
