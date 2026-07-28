@@ -11,7 +11,9 @@ pub struct LevelGenPlugin;
 impl Plugin for LevelGenPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(LevelData::default())
-           .add_systems(OnEnter(GameState::GeneratingLevel), generate_level);
+           // Free-roam island world. (The procedural racing city — `generate_level`
+           // — is kept in the code but switched off for now.)
+           .add_systems(OnEnter(GameState::GeneratingLevel), generate_island_level);
     }
 }
 
@@ -41,28 +43,58 @@ fn min_dist_to_points(x: f32, z: f32, points: &[Vec3]) -> f32 {
 }
 
 
+// --- Réunion island ---------------------------------------------------------
+// The island of Réunion: an oval volcanic island rising from the Indian Ocean,
+// with two great massifs — Piton des Neiges (the tall central peak + cirques) and
+// Piton de la Fournaise (the SE volcano) — a coastal plain, and ocean all around.
+// Vertical scale is exaggerated (Forza-Horizon style) for dramatic terrain.
+pub const ISLAND_A: f32 = 1500.0; // E–W semi-axis
+pub const ISLAND_B: f32 = 1080.0; // N–S semi-axis
+
+/// Irregular coastline radius (≈1.0 at the shore) as a function of bearing.
+pub fn island_coast(ang: f32) -> f32 {
+    1.0 + 0.07 * (3.0 * ang).sin()
+        + 0.05 * (5.0 * ang + 1.3).cos()
+        + 0.035 * (7.0 * ang - 0.6).sin()
+        + 0.02 * (11.0 * ang).cos()
+}
+
 pub fn get_terrain_height(x: f32, z: f32) -> f32 {
-    // Diagonal axes — symmetric under x↔z swap so heightfield and visual mesh
-    // always agree regardless of Rapier's internal row/column axis convention.
-    //   s = x+z : swapping x,z gives z+x = s  (fully symmetric)
-    //   d = x-z : swapping gives z-x = -d, but cos(-d) = cos(d)  (even function)
-    // Rule: use sin(s), cos(s), cos(d) — never sin(d).
-    let s = x + z;
-    let d = x - z;
+    let ang = z.atan2(x);
+    let coast = island_coast(ang);
+    let r = ((x / ISLAND_A).powi(2) + (z / ISLAND_B).powi(2)).sqrt();
+    let land = coast - r; // >0 inland, <0 out to sea
 
-    // Huge, dramatic hills — tall peaks and deep valleys. The long wavelengths keep
-    // the actual grades drivable and smooth despite the big elevation swings.
-    let large = (s / 640.0).sin() * 62.0
-              + (d / 680.0).cos() * 54.0;
-    // Medium hills — neighbourhood scale
-    let medium = (s / 220.0).sin() * 22.0
-               + (d / 190.0).cos() * 18.0
-               + (s / 120.0).cos() * 9.0;
-    // Fine surface texture
-    let small = (d / 82.0).cos() * 3.5 + (s / 92.0).sin() * 3.0;
+    if land <= 0.0 {
+        // Ocean floor: shelves off then flattens to the abyssal plain.
+        return (land * 350.0).max(-140.0);
+    }
 
-    // Baseline keeps most terrain positive; .max(0) creates flat valleys
-    (large + medium + small + 62.0).max(0.0)
+    // 0 at the coast → ~1 deep inland.
+    let inland = (land / coast).clamp(0.0, 1.0);
+
+    // Coastal plain rising gently inland.
+    let mut h = 10.0 + inland * 80.0;
+
+    // Piton des Neiges massif (tall central peak).
+    let d1x = x + 220.0;
+    let d1z = z + 120.0;
+    h += 540.0 * (-(d1x * d1x + d1z * d1z) / (2.0 * 470.0 * 470.0)).exp();
+
+    // Piton de la Fournaise (SE volcano, a bit lower, broader shield).
+    let d2x = x - 640.0;
+    let d2z = z - 430.0;
+    h += 380.0 * (-(d2x * d2x + d2z * d2z) / (2.0 * 380.0 * 380.0)).exp();
+
+    // Ridges, gorges and cirques (scaled by `inland` so the coast stays smooth).
+    let ridges = ((x / 130.0).sin() * (z / 150.0).cos()) * 55.0
+        + ((x / 70.0 + z / 80.0).sin()) * 24.0
+        + ((x / 300.0 - z / 260.0).cos()) * 40.0;
+    h += ridges * 0.6 * inland;
+
+    // Fade to sea level at the very shore so there are beaches, not cliffs.
+    let shore = (land * 7.0).clamp(0.0, 1.0);
+    (h * shore).max(0.0)
 }
 
 /// A small repeating texture of office windows (lit/unlit) so buildings read as
@@ -144,6 +176,234 @@ fn windowed_cuboid(fx: f32, h: f32, fz: f32) -> Mesh {
     m
 }
 
+/// Ground colour for the island: sand at the shore, forest green rising inland,
+/// bare rock on cliffs/high ground, snow on the summit, dark ocean floor below sea.
+fn island_color(x: f32, z: f32, h: f32) -> [f32; 4] {
+    if h <= 0.0 {
+        return [0.04, 0.18, 0.30, 1.0]; // ocean floor (hidden under the water)
+    }
+    if h < 3.0 {
+        return [0.86, 0.80, 0.58, 1.0]; // beach sand
+    }
+    if h > 470.0 {
+        return [0.93, 0.93, 0.95, 1.0]; // snow on Piton des Neiges
+    }
+    // Slope → bare rock on the steep faces.
+    let e = 8.0;
+    let dhdx = (get_terrain_height(x + e, z) - get_terrain_height(x - e, z)) / (2.0 * e);
+    let dhdz = (get_terrain_height(x, z + e) - get_terrain_height(x, z - e)) / (2.0 * e);
+    let slope = (dhdx * dhdx + dhdz * dhdz).sqrt();
+    if slope > 0.9 || h > 330.0 {
+        return [0.34, 0.31, 0.29, 1.0];
+    }
+    // Lush green, darkening with altitude.
+    let t = (h / 330.0).clamp(0.0, 1.0);
+    [0.17 + t * 0.05, 0.5 - t * 0.2, 0.13 + t * 0.02, 1.0]
+}
+
+/// Builds the free-roam island of Réunion: island terrain, surrounding ocean, and
+/// a road network (coastal ring + interior radial/ring roads), with forests. No
+/// buildings, gates, AI or racing logic — those are switched off for now.
+fn generate_island_level(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut state: ResMut<NextState<GameState>>,
+    mut level_data: ResMut<LevelData>,
+) {
+    let mut rng = rand::rng();
+    let tau = std::f32::consts::TAU;
+
+    // --- Terrain mesh -----------------------------------------------------
+    let n = 401usize;
+    let grid = 11.0_f32; // ~±2200 span, comfortably larger than the island
+    let half = (n as f32 - 1.0) * grid / 2.0;
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n * n);
+    let mut normals: Vec<[f32; 3]> = vec![[0.0, 1.0, 0.0]; n * n];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(n * n);
+    let mut colors: Vec<[f32; 4]> = Vec::with_capacity(n * n);
+    let mut heights: Vec<f32> = Vec::with_capacity(n * n);
+    for zi in 0..n {
+        for xi in 0..n {
+            let px = xi as f32 * grid - half;
+            let pz = zi as f32 * grid - half;
+            let h = get_terrain_height(px, pz);
+            heights.push(h);
+            positions.push([px, h, pz]);
+            uvs.push([xi as f32 / n as f32, zi as f32 / n as f32]);
+            colors.push(island_color(px, pz, h));
+        }
+    }
+    for zi in 0..n {
+        for xi in 0..n {
+            let idx = zi * n + xi;
+            let mut nx = 0.0;
+            let mut nz = 0.0;
+            if xi > 0 && xi < n - 1 {
+                nx = heights[idx - 1] - heights[idx + 1];
+            }
+            if zi > 0 && zi < n - 1 {
+                nz = heights[(zi - 1) * n + xi] - heights[(zi + 1) * n + xi];
+            }
+            let nrm = Vec3::new(nx, grid * 2.0, nz).normalize();
+            normals[idx] = [nrm.x, nrm.y, nrm.z];
+        }
+    }
+    let mut indices: Vec<u32> = Vec::new();
+    for zi in 0..n - 1 {
+        for xi in 0..n - 1 {
+            let s = (zi * n + xi) as u32;
+            let w = n as u32;
+            indices.extend_from_slice(&[s, s + w, s + 1, s + 1, s + w, s + 1 + w]);
+        }
+    }
+    let mut terrain = Mesh::new(
+        bevy::render::render_resource::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+    terrain.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    terrain.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    terrain.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    terrain.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    terrain.insert_indices(Indices::U32(indices));
+    commands.spawn((
+        Mesh3d(meshes.add(terrain)),
+        MeshMaterial3d(materials.add(Color::WHITE)),
+        Transform::IDENTITY,
+        RaceEntity,
+    ));
+
+    // --- Ocean ------------------------------------------------------------
+    let ocean_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.05, 0.24, 0.42),
+        perceptual_roughness: 0.2,
+        metallic: 0.15,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(6400.0, 4.0, 6400.0))),
+        MeshMaterial3d(ocean_mat),
+        Transform::from_xyz(0.0, -2.0, 0.0), // surface at y = 0
+        RaceEntity,
+    ));
+
+    // --- Coastal ring road (main road + the map "loop") -------------------
+    let num_ring = 72;
+    let mut ring: Vec<Vec3> = Vec::new();
+    for i in 0..num_ring {
+        let th = i as f32 / num_ring as f32 * tau;
+        let rho = 0.87 * island_coast(th);
+        let x = ISLAND_A * rho * th.cos();
+        let z = ISLAND_B * rho * th.sin();
+        ring.push(Vec3::new(x, get_terrain_height(x, z), z));
+    }
+    let ring_cl = sample_road_centerline(&ring);
+    let road_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.95,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(build_road_mesh(&ring_cl))),
+        MeshMaterial3d(road_mat),
+        Transform::IDENTITY,
+        RaceEntity,
+    ));
+    level_data.waypoints = ring.clone();
+    level_data.road_centerline = ring_cl.clone();
+    level_data.avenues = Vec::new();
+    level_data.start_pos = ring[0] + Vec3::Y * 3.0;
+
+    // --- Secondary roads: radials into the interior + inner ring roads ----
+    let avenue_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.95,
+        cull_mode: None,
+        ..default()
+    });
+    let radials = 14;
+    for k in 0..radials {
+        let th = k as f32 / radials as f32 * tau + 0.15;
+        let mut pts = Vec::new();
+        let steps = 46;
+        for j in 0..=steps {
+            let t = j as f32 / steps as f32;
+            let rho = 0.85 * island_coast(th) * (1.0 - t) + 0.16 * t;
+            let a = th + (t * 8.0).sin() * 0.03; // gentle wind up the mountain
+            let x = ISLAND_A * rho * a.cos();
+            let z = ISLAND_B * rho * a.sin();
+            pts.push(Vec3::new(x, 0.0, z));
+        }
+        commands.spawn((
+            Mesh3d(meshes.add(build_avenue_mesh(&pts))),
+            MeshMaterial3d(avenue_mat.clone()),
+            Transform::IDENTITY,
+            RaceEntity,
+        ));
+    }
+    for &rr in &[0.58_f32, 0.34] {
+        let mut pts = Vec::new();
+        let steps = 90;
+        for j in 0..=steps {
+            let th = j as f32 / steps as f32 * tau;
+            let rho = rr * island_coast(th);
+            let x = ISLAND_A * rho * th.cos();
+            let z = ISLAND_B * rho * th.sin();
+            pts.push(Vec3::new(x, 0.0, z));
+        }
+        commands.spawn((
+            Mesh3d(meshes.add(build_avenue_mesh(&pts))),
+            MeshMaterial3d(avenue_mat.clone()),
+            Transform::IDENTITY,
+            RaceEntity,
+        ));
+    }
+
+    // --- Forests ----------------------------------------------------------
+    let tree_kit = TreeKit {
+        trunk: meshes.add(Cylinder::new(0.35, 5.0)),
+        foliage: [
+            meshes.add(Cone { radius: 2.8, height: 8.0 }),
+            meshes.add(Sphere::new(3.0)),
+            meshes.add(Cone { radius: 1.7, height: 10.5 }),
+        ],
+        trunk_mat: materials.add(Color::srgb(0.3, 0.2, 0.1)),
+        greens: [
+            materials.add(Color::srgb(0.1, 0.4, 0.12)),
+            materials.add(Color::srgb(0.15, 0.48, 0.15)),
+            materials.add(Color::srgb(0.09, 0.34, 0.14)),
+            materials.add(Color::srgb(0.2, 0.52, 0.18)),
+        ],
+    };
+    let mut tx = -2000.0_f32;
+    while tx < 2000.0 {
+        tx += rng.random_range(26.0..46.0);
+        let mut tz = -2000.0_f32;
+        while tz < 2000.0 {
+            tz += rng.random_range(26.0..46.0);
+            let h = get_terrain_height(tx, tz);
+            if h < 6.0 || h > 300.0 {
+                continue; // no trees on the beach, in the sea, or high on the rock
+            }
+            if min_dist_to_points(tx, tz, &ring_cl) < 14.0 {
+                continue; // keep the main road clear
+            }
+            if rng.random_range(0.0..1.0) < 0.55 {
+                continue;
+            }
+            let jx = tx + rng.random_range(-9.0..9.0);
+            let jz = tz + rng.random_range(-9.0..9.0);
+            plant_tree(&mut commands, &tree_kit, Vec3::new(jx, 0.0, jz), &mut rng);
+        }
+    }
+
+    state.set(GameState::Racing);
+}
+
+/// Procedural racing-city generator. Kept for reference but currently switched
+/// off in favour of `generate_island_level`.
+#[allow(dead_code)]
 fn generate_level(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,

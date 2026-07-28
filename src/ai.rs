@@ -1,3 +1,6 @@
+//! Racing AI — switched off for free-roam island mode, but kept intact.
+#![allow(dead_code)]
+
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use rand::RngExt;
@@ -59,7 +62,7 @@ fn spawn_ai_cars(
         let aggression = rng.random_range(0.6..1.35);
         let caution = rng.random_range(0.7..1.3);
         let consistency = rng.random_range(0.55..0.98);
-        let line_bias = rng.random_range(-4.0..4.0);
+        let line_bias = rng.random_range(-6.0..6.0);
 
         let tail_mat = materials.add(StandardMaterial {
             base_color: Color::srgb(0.3, 0.0, 0.0),
@@ -208,15 +211,26 @@ fn ai_update(
         let to_target = (target_pos - transform.translation).normalize_or_zero();
         let mut target_steering = -right.dot(to_target).clamp(-1.0, 1.0);
 
-        // Speed management by curvature (measured just ahead, above) so cars brake
-        // JUST before a corner, not halfway down the preceding straight. Higher base
-        // speed + gentler penalty so they keep good pace.
+        // Physically-achievable corner speed. The car's tightest turn radius is
+        // v²/grip, so to hold a corner of radius R it must be below sqrt(grip·R).
+        // We measure the actual road radius ahead (menger curvature of 3 points) and
+        // cap speed to it — this is what actually keeps them ON the road.
+        let a = cl[(nearest + 2) % cn];
+        let b = cl[(nearest + 9) % cn];
+        let c = cl[(nearest + 16) % cn];
+        let ab = a.distance(b);
+        let bc = b.distance(c);
+        let ca = c.distance(a);
+        let area2 = ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs();
+        let radius = if area2 > 1.0 { (ab * bc * ca) / (2.0 * area2) } else { 2000.0 };
         let speed = velocity.linear.length();
-        let corner_speed = (28.0 + 40.0 * ai.aggression) / (1.0 + curve * 3.0 * ai.caution);
-        // Coast (not full stop) when a touch over the limit; only brake hard when
-        // well over it — avoids the dramatic slow-downs.
-        let mut throttle = if speed < corner_speed { 1.0 } else { 0.3 };
-        let mut braking = speed > corner_speed * 1.3;
+        let corner_speed = ((50.0 * radius).sqrt()
+            * (0.75 + 0.12 * ai.aggression)
+            * (1.15 - 0.12 * ai.caution))
+            .clamp(9.0, 60.0);
+        // Coast (not full stop) when a touch over; brake hard only when well over.
+        let mut throttle = if speed < corner_speed { 1.0 } else { 0.25 };
+        let mut braking = speed > corner_speed * 1.25;
         let mut drifting = curve > 0.6 && speed > 18.0 && ai.aggression > 1.05;
 
         // Obstacle avoidance: feeler rays detect buildings and other cars ahead
@@ -278,8 +292,8 @@ fn ai_update(
             throttle = 0.0;
         }
 
-        // Smooth steering — gentle enough to avoid overshoot/weaving.
-        vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.16;
+        // Steering response — responsive enough to actually make the corner.
+        vehicle.steering_angle += (target_steering * vehicle.max_steering - vehicle.steering_angle) * 0.25;
 
         // Visual wheel steering
         if let Some(children) = children {

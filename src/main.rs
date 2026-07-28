@@ -22,7 +22,8 @@ fn main() {
         .add_plugins(ui::UiPlugin)
         .add_plugins(level_gen::LevelGenPlugin)
         .add_plugins(vehicle::VehiclePlugin)
-        .add_plugins(ai::AiPlugin)
+        // AI racers switched off for free-roam island mode (code kept).
+        // .add_plugins(ai::AiPlugin)
         .add_plugins(camera::CameraPlugin)
         .add_plugins(hud::HudPlugin)
         .add_plugins(props::PropsPlugin)
